@@ -2,7 +2,7 @@
 
 A comprehensive server-side plugin system for MetaTrader 4 and MetaTrader 5 that routes trades to A-book or B-book based on real-time scores from an external machine learning service.
 
-## 🎯 Features
+## Features
 
 - **Real-time Scoring**: Integrates with external ML scoring service via TCP/Protobuf
 - **Configurable Thresholds**: Per-instrument group routing thresholds
@@ -12,25 +12,199 @@ A comprehensive server-side plugin system for MetaTrader 4 and MetaTrader 5 that
 - **GUI Configuration**: Easy-to-use configuration panel for threshold management
 - **Broker Agnostic**: Designed to work with any MT4/MT5 broker platform
 
-## 📁 Project Structure
+## File Documentation
+
+### Core Implementation Files
+
+#### **`MT4_ABBook_Plugin.cpp`** - Primary MT4 Plugin Implementation
+- **Function**: Main EA for real-time trade detection and routing decisions
+- **Key Features**: 
+  - Monitors new trades via CheckForNewOrders()
+  - Extracts 12-field simplified feature vector for scoring
+  - TCP socket communication with scoring service
+  - JSON messaging with fallback mechanism
+  - A-book/B-book routing decisions based on thresholds
+- **Interactions**: 
+  - Reads from `ABBook_Config.ini` for thresholds
+  - Optionally uses `ABBook_ProtobufLib.cpp` for protobuf encoding
+  - Can integrate with `BrokerIntegration_Example.cpp` for actual routing
+  - Sends metrics to `InfluxDB_HTTPClient.cpp` for monitoring
+
+#### **`MT4_Server_Plugin.cpp`** - Server-Side Plugin Template
+- **Function**: Demonstrates server-side integration hooks for MT4/MT5 Server SDK
+- **Key Features**:
+  - OnTradeRequest() hook for server-side trade interception
+  - Complete 51-field feature vector extraction
+  - Production-ready TCP client implementation
+  - Thread-safe configuration management
+- **Interactions**:
+  - Uses `scoring.proto` definition for protobuf messaging
+  - Integrates with `BrokerIntegration_Example.cpp` for routing
+  - Reads from `ABBook_Config.ini` for configuration
+  - Built using `build_plugin.bat` with `plugin_exports.def`
+
+#### **`ABBook_ProtobufLib.cpp`** - Advanced Protobuf Communication
+- **Function**: DLL providing native protobuf binary encoding/decoding
+- **Key Features**:
+  - Full 51-field protobuf message construction
+  - Binary serialization for production efficiency
+  - Error handling and validation
+  - Memory management for large messages
+- **Interactions**:
+  - Implements `scoring.proto` message definitions
+  - Called by both MT4 and server plugins for protobuf operations
+  - Alternative to JSON messaging in production environments
+
+### Configuration & Protocol Files
+
+#### **`ABBook_Config.ini`** - Central Configuration Management
+- **Function**: Stores all configurable parameters and thresholds
+- **Contents**:
+  - Scoring service connection details (IP, port, timeout)
+  - Per-instrument group thresholds (FXMajors, Crypto, etc.)
+  - Fallback behavior settings
+  - Logging and monitoring options
+- **Interactions**:
+  - Read by all plugin implementations on startup
+  - Modified by configuration panel
+  - Monitored for real-time updates without restart
+
+#### **`scoring.proto`** - Protobuf Message Definitions
+- **Function**: Defines the exact structure of 51-field feature vector
+- **Key Messages**:
+  - `ScoringRequest`: Complete trade and account data
+  - `ScoringResponse`: ML score and metadata
+- **Interactions**:
+  - Used by `ABBook_ProtobufLib.cpp` for code generation
+  - Reference for all plugin implementations
+  - Must match scoring service expectations
+
+#### **`plugin_exports.def`** - DLL Export Definitions
+- **Function**: Defines which functions are exported from compiled DLLs
+- **Purpose**: Ensures proper linking between MQL4/MQL5 and C++ components
+- **Interactions**: Used by `build_plugin.bat` during compilation
+
+### Integration Templates
+
+#### **`BrokerIntegration_Example.cpp`** - Broker API Integration
+- **Function**: Template showing how to connect to broker's routing systems
+- **Key Functions**:
+  - `RouteToABook()`: Sends trades to liquidity providers
+  - `RouteToBBook()`: Keeps trades in-house
+  - `GetAccountRiskProfile()`: Retrieves client risk data
+  - `MonitorPositionPnL()`: Tracks trade performance
+- **Interactions**:
+  - Called by main plugins after routing decisions
+  - Integrates with broker's specific APIs (needs customization)
+  - Provides risk management and P&L monitoring
+
+#### **`InfluxDB_HTTPClient.cpp`** - Metrics Export System
+- **Function**: HTTP client for sending real-time metrics to InfluxDB
+- **Key Features**:
+  - Native HTTP/HTTPS connectivity
+  - InfluxDB line protocol formatting
+  - Batch sending for performance
+  - Connection pooling and retry logic
+- **Interactions**:
+  - Receives metric data from main plugins
+  - Sends to InfluxDB for monitoring dashboards
+  - Independent component - optional for core functionality
+
+### Testing & Development Files
+
+#### **`test_scoring_service.py`** - Mock Scoring Service
+- **Function**: Python service simulating ML scoring for development/testing
+- **Features**:
+  - TCP server listening on configurable port
+  - Accepts JSON requests (protobuf simulation)
+  - Returns mock scores based on trade characteristics
+  - Multi-threaded for concurrent connections
+- **Interactions**:
+  - Receives requests from all plugin implementations
+  - Used for end-to-end testing without real ML service
+  - Reference implementation for actual scoring service
+
+#### **`simple_connection_test.cpp`** - Connection Validator
+- **Function**: Standalone C++ program to test TCP connectivity
+- **Purpose**: Validates network connectivity and message format
+- **Interactions**: Tests connection to scoring service independently
+
+#### **`test_plugin.cpp`** - Plugin Functionality Tester  
+- **Function**: Unit test program for plugin functions
+- **Purpose**: Validates routing logic and configuration handling
+- **Interactions**: Loads and tests compiled plugin DLLs
+
+### Build & Deployment Files
+
+#### **`build_plugin.bat`** - Automated Build Script
+- **Function**: Compiles all C++ components into DLLs
+- **Process**:
+  1. Compiles `MT4_Server_Plugin.cpp` with exports
+  2. Links required libraries (WinSock, etc.)
+  3. Creates `ABBook_Plugin.dll` for production use
+- **Interactions**: Uses `plugin_exports.def` for proper exports
+
+#### **`test_connection.bat`** - Quick Connectivity Test
+- **Function**: Batch script for rapid connection testing
+- **Purpose**: Validates scoring service availability
+- **Interactions**: Can launch `simple_connection_test.cpp` or Python scripts
+
+### Documentation Files
+
+#### **`INSTALLATION_MANUAL.md`** - Complete Setup Guide
+- **Function**: Step-by-step installation instructions
+- **Coverage**: System requirements, file placement, configuration, testing
+- **Target**: Technical teams implementing the system
+
+#### **`DEPLOYMENT_CHECKLIST.md`** - Production Deployment Guide
+- **Function**: 200+ point checklist for production deployment
+- **Coverage**: Pre-deployment, deployment, post-deployment verification
+- **Target**: DevOps and system administrators
+
+#### **`CPP_PLUGIN_README.md`** - C++ Plugin Documentation
+- **Function**: Technical documentation for C++ components
+- **Coverage**: API reference, integration points, performance considerations
+- **Target**: Developers working with server-side plugins
+
+## Component Interaction Flow
 
 ```
-Mt4 plugin/
-├── MT4_ABBook_Router.mq4          # Main MT4 Expert Advisor
-├── MT5_ABBook_Router.mq5          # Main MT5 Expert Advisor  
-├── ABBook_Config.ini              # Configuration file template
-├── ABBook_ConfigPanel.mq4         # GUI configuration panel
-├── scoring.proto                  # Protobuf message definitions
-├── test_scoring_service.py        # Test scoring service
-├── ABBook_ProtobufLib.cpp         # Advanced protobuf DLL (optional)
-├── BrokerIntegration_Example.cpp  # Broker API integration template
-├── InfluxDB_HTTPClient.cpp        # HTTP client for InfluxDB metrics
-├── INSTALLATION_MANUAL.md         # Detailed installation guide
-├── DEPLOYMENT_CHECKLIST.md        # Production deployment checklist
-└── README.md                      # This file
+1. Trade Occurs → MT4_ABBook_Plugin.cpp detects
+2. Plugin reads → ABBook_Config.ini for thresholds  
+3. Plugin extracts → Trade features (12 or 51 fields)
+4. Plugin encodes → Using ABBook_ProtobufLib.cpp (optional)
+5. Plugin sends → TCP request to scoring service
+6. Service returns → ML score via scoring.proto format
+7. Plugin compares → Score vs threshold from config
+8. Plugin routes → Via BrokerIntegration_Example.cpp
+9. Plugin logs → Decision and sends metrics to InfluxDB
+10. InfluxDB stores → For monitoring and analysis
 ```
 
-## 🏗️ System Architecture
+## File Dependencies
+
+```
+MT4_ABBook_Plugin.cpp
+├── ABBook_Config.ini (configuration)
+├── ABBook_ProtobufLib.cpp (optional - encoding)
+├── BrokerIntegration_Example.cpp (routing)
+├── InfluxDB_HTTPClient.cpp (metrics)
+└── scoring.proto (message format)
+
+MT4_Server_Plugin.cpp
+├── plugin_exports.def (exports)
+├── build_plugin.bat (compilation)
+├── scoring.proto (protobuf)
+└── ABBook_Config.ini (configuration)
+
+Test Components
+├── test_scoring_service.py (mock service)
+├── simple_connection_test.cpp (connectivity)
+├── test_plugin.cpp (unit tests)
+└── test_connection.bat (automation)
+```
+
+## System Architecture
 
 ```
 ┌─────────────────┐    TCP/Protobuf    ┌──────────────────┐
@@ -73,7 +247,7 @@ Mt4 plugin/
 └─────────────────┘                    └──────────────────┘
 ```
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Install Test Scoring Service
 
@@ -100,7 +274,7 @@ python test_scoring_service.py
 3. Adjust thresholds using the configuration panel
 4. Monitor logs for routing decisions
 
-## ⚙️ Configuration
+## Configuration
 
 ### Default Thresholds
 
@@ -119,7 +293,7 @@ python test_scoring_service.py
 - **Score < Threshold**: Route to A-book
 - **Service Unavailable**: Use fallback score (default: route to A-book)
 
-## 📊 Scoring Model Features
+## Scoring Model Features
 
 The system sends 51 features to the scoring service:
 
@@ -140,7 +314,7 @@ The system sends 51 features to the scoring service:
 
 See `scoring.proto` for complete field definitions.
 
-## 📈 Monitoring and Logging
+## Monitoring and Logging
 
 ### File Logging
 - Location: `MQL4/5/Files/ABBook_YYYY-MM-DD.log`
@@ -160,7 +334,7 @@ abbook_routing,symbol=EURUSD,group=FXMajors,decision=A_BOOK
 - Fallback usage frequency
 - Score distribution by instrument group
 
-## 🔧 Production Components
+## Production Components
 
 ### Broker Integration DLL
 The `BrokerIntegration_Example.cpp` provides a template for connecting to your broker's routing APIs:
@@ -221,7 +395,7 @@ void RouteToABook(int ticket, string reason)
 - Load balancing across multiple scoring instances
 - Asynchronous processing for high volumes
 
-## 🧪 Testing
+## Testing
 
 ### Test Scenarios
 1. **Normal Operation**: Service available, various score ranges
@@ -236,7 +410,7 @@ void RouteToABook(int ticket, string reason)
 - Verify fallback behavior
 - Check log accuracy and completeness
 
-## 📋 Requirements
+## Requirements
 
 ### System Requirements
 - MetaTrader 4 (build 1170+) or MetaTrader 5 (build 2650+)
@@ -249,7 +423,7 @@ void RouteToABook(int ticket, string reason)
 - Configurable ports (default: 8080)
 - Low latency network for optimal performance
 
-## 🛠️ Development
+## Development
 
 ### Adding New Features
 1. **New Instrument Groups**: Update `GetInstrumentGroup()` function
@@ -264,14 +438,14 @@ void RouteToABook(int ticket, string reason)
 - **Protobuf**: Message serialization/deserialization
 - **GUI**: User-friendly configuration interface
 
-## 📚 Documentation
+## Documentation
 
 - **[Installation Manual](INSTALLATION_MANUAL.md)**: Complete setup guide
 - **[Protobuf Definitions](scoring.proto)**: Message format specifications
 - **Code Comments**: Inline documentation for all functions
 - **Configuration Examples**: Sample configuration files
 
-## 🤝 Support
+## Support
 
 For technical issues or questions:
 1. Check the installation manual
@@ -280,10 +454,10 @@ For technical issues or questions:
 4. Test with the provided mock service
 5. Contact system administrator
 
-## 📄 License
+## License
 
 Copyright 2024, Trading System. All rights reserved.
 
 ---
 
-**⚠️ Important Notice**: This is a demonstration implementation. For production use, ensure proper integration with your broker's specific routing APIs and implement appropriate security measures. 
+**Important Notice**: This is a demonstration implementation. For production use, ensure proper integration with your broker's specific routing APIs and implement appropriate security measures. 

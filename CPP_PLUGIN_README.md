@@ -4,14 +4,14 @@
 
 This is a complete **server-side C++ plugin** that hooks directly into the MT4/MT5 server trade pipeline to make real-time A/B-book routing decisions based on external ML scoring service.
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 MT4/MT5 Server → OnTradeRequest() → Extract 51 Fields → TCP to CVM → 
 Score Response → Threshold Check → A-book/B-book Decision → Route Trade
 ```
 
-## 📁 Key Files
+## Key Files
 
 - **`MT4_Server_Plugin.cpp`** - Main plugin implementation
 - **`ABBook_Config.ini`** - Configuration file
@@ -19,7 +19,7 @@ Score Response → Threshold Check → A-book/B-book Decision → Route Trade
 - **`test_plugin.cpp`** - Test client for demonstration
 - **`plugin_exports.def`** - DLL export definitions
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Update Configuration
 Edit `ABBook_Config.ini`:
@@ -42,7 +42,7 @@ cl test_plugin.cpp /link ABBook_Plugin.lib
 test_plugin.exe
 ```
 
-## 🔧 Integration Points
+## Integration Points
 
 ### Plugin API Functions
 
@@ -70,7 +70,7 @@ void PluginCleanup();
 5. **Routing Decision**: Compares score to threshold, routes A-book or B-book
 6. **Logging**: Records all decisions with full audit trail
 
-## 📊 Protobuf Communication
+## Protobuf Communication
 
 ### Request Format (51 fields)
 ```cpp
@@ -96,7 +96,7 @@ struct ScoringResponse {
 };
 ```
 
-## ⚙️ Configuration Options
+## Configuration Options
 
 ### Thresholds per Asset Class
 ```ini
@@ -115,14 +115,14 @@ ForceBBook=false    # Force all trades to B-book
 UseTDNAScores=true  # Use your TDNA scoring service
 ```
 
-## 📈 Performance Characteristics
+## Performance Characteristics
 
 - **Latency**: <1ms plugin processing + ~5ms CVM lookup = **<6ms total**
 - **Throughput**: 1000+ trades/second
 - **Memory**: <10MB footprint
 - **Reliability**: Automatic fallback on CVM failure
 
-## 🔍 Testing & Validation
+## Testing & Validation
 
 ### Test Client Output Example
 ```
@@ -160,7 +160,7 @@ void RouteToBBook(int login, int ticket, const char* reason) {
 }
 ```
 
-## 🛡️ Security & Reliability
+## Security & Reliability
 
 - **Fallback Scoring**: Uses configurable fallback score if CVM unavailable
 - **Error Handling**: Defaults to A-book routing on any errors
@@ -168,14 +168,14 @@ void RouteToBBook(int login, int ticket, const char* reason) {
 - **Thread Safety**: Mutex protection for configuration updates
 - **Audit Trail**: Complete logging of all routing decisions
 
-## 📋 Requirements
+## Requirements
 
 - **Windows Server 2016+**
 - **Visual Studio 2019+ or Windows SDK**
 - **MT4/MT5 Server SDK** (for production integration)
 - **Network connectivity** to CVM scoring service
 
-## 🎯 Next Steps for Production
+## Next Steps for Production
 
 1. **Get MT Server SDK** - Need official SDK for proper server integration hooks
 2. **CVM Connection Test** - Verify TCP communication with your scoring service  
@@ -183,7 +183,7 @@ void RouteToBBook(int login, int ticket, const char* reason) {
 4. **External Data API** - Implement HTTP client for missing client data fields
 5. **Load Testing** - Verify performance under production traffic
 
-## 🤝 Ready for Integration Testing
+## Ready for Integration Testing
 
 The plugin is **ready for immediate testing** with your CVM. Just need:
 - Your CVM IP address and port
