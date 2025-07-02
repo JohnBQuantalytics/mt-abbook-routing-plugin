@@ -16,32 +16,33 @@ A comprehensive server-side plugin system for MetaTrader 4 and MetaTrader 5 that
 
 ### Core Implementation Files
 
-#### **`MT4_ABBook_Plugin.cpp`** - Primary MT4 Plugin Implementation
-- **Function**: Main EA for real-time trade detection and routing decisions
+#### **`MT4_Server_Plugin.cpp`** - Primary Server Plugin Implementation
+- **Function**: Production-ready server-side C++ plugin for MT4/MT5 Server SDK integration
+- **Key Features**:
+  - `OnTradeRequest()` hook for server-side trade interception
+  - Complete 51-field feature vector extraction
+  - Production-ready TCP client implementation
+  - Thread-safe configuration management
+  - Real-time A-book/B-book routing decisions
+- **Interactions**:
+  - Uses `scoring.proto` definition for protobuf messaging
+  - Integrates with `BrokerIntegration_Example.cpp` for routing
+  - Reads from `ABBook_Config.ini` for configuration
+  - Built using `build_plugin.bat` with `plugin_exports.def`
+
+#### **`MT4_ABBook_Plugin.cpp`** - Alternative Plugin Implementation
+- **Function**: Simplified server-side plugin for demonstration and testing
 - **Key Features**: 
-  - Monitors new trades via CheckForNewOrders()
+  - Demonstrates core plugin structure and API
   - Extracts 12-field simplified feature vector for scoring
   - TCP socket communication with scoring service
   - JSON messaging with fallback mechanism
   - A-book/B-book routing decisions based on thresholds
 - **Interactions**: 
   - Reads from `ABBook_Config.ini` for thresholds
-  - Optionally uses `ABBook_ProtobufLib.cpp` for protobuf encoding
-  - Can integrate with `BrokerIntegration_Example.cpp` for actual routing
-  - Sends metrics to `InfluxDB_HTTPClient.cpp` for monitoring
-
-#### **`MT4_Server_Plugin.cpp`** - Server-Side Plugin Template
-- **Function**: Demonstrates server-side integration hooks for MT4/MT5 Server SDK
-- **Key Features**:
-  - OnTradeRequest() hook for server-side trade interception
-  - Complete 51-field feature vector extraction
-  - Production-ready TCP client implementation
-  - Thread-safe configuration management
-- **Interactions**:
-  - Uses `scoring.proto` definition for protobuf messaging
+  - Can use `ABBook_ProtobufLib.cpp` for protobuf encoding
   - Integrates with `BrokerIntegration_Example.cpp` for routing
-  - Reads from `ABBook_Config.ini` for configuration
-  - Built using `build_plugin.bat` with `plugin_exports.def`
+  - Sends metrics to `InfluxDB_HTTPClient.cpp` for monitoring
 
 #### **`ABBook_ProtobufLib.cpp`** - Advanced Protobuf Communication
 - **Function**: DLL providing native protobuf binary encoding/decoding
@@ -81,7 +82,7 @@ A comprehensive server-side plugin system for MetaTrader 4 and MetaTrader 5 that
 
 #### **`plugin_exports.def`** - DLL Export Definitions
 - **Function**: Defines which functions are exported from compiled DLLs
-- **Purpose**: Ensures proper linking between MQL4/MQL5 and C++ components
+- **Purpose**: Ensures proper linking between MT4/MT5 Server and C++ plugin components
 - **Interactions**: Used by `build_plugin.bat` during compilation
 
 ### Integration Templates
@@ -169,33 +170,34 @@ A comprehensive server-side plugin system for MetaTrader 4 and MetaTrader 5 that
 ## Component Interaction Flow
 
 ```
-1. Trade Occurs → MT4_ABBook_Plugin.cpp detects
-2. Plugin reads → ABBook_Config.ini for thresholds  
-3. Plugin extracts → Trade features (12 or 51 fields)
-4. Plugin encodes → Using ABBook_ProtobufLib.cpp (optional)
+1. Trade Request → MT4/MT5 Server receives client trade
+2. Server calls → Plugin OnTradeRequest() hook
+3. Plugin extracts → Complete 51-field feature vector
+4. Plugin encodes → Using ABBook_ProtobufLib.cpp for protobuf
 5. Plugin sends → TCP request to scoring service
 6. Service returns → ML score via scoring.proto format
 7. Plugin compares → Score vs threshold from config
 8. Plugin routes → Via BrokerIntegration_Example.cpp
 9. Plugin logs → Decision and sends metrics to InfluxDB
-10. InfluxDB stores → For monitoring and analysis
+10. Server executes → A-book or B-book routing decision
 ```
 
 ## File Dependencies
 
 ```
-MT4_ABBook_Plugin.cpp
+MT4_Server_Plugin.cpp (Primary Implementation)
 ├── ABBook_Config.ini (configuration)
-├── ABBook_ProtobufLib.cpp (optional - encoding)
+├── ABBook_ProtobufLib.cpp (protobuf encoding)
 ├── BrokerIntegration_Example.cpp (routing)
 ├── InfluxDB_HTTPClient.cpp (metrics)
-└── scoring.proto (message format)
+├── scoring.proto (message format)
+├── plugin_exports.def (DLL exports)
+└── build_plugin.bat (compilation)
 
-MT4_Server_Plugin.cpp
-├── plugin_exports.def (exports)
-├── build_plugin.bat (compilation)
-├── scoring.proto (protobuf)
-└── ABBook_Config.ini (configuration)
+MT4_ABBook_Plugin.cpp (Alternative Implementation)
+├── ABBook_Config.ini (configuration)
+├── scoring.proto (message format)
+└── BrokerIntegration_Example.cpp (routing)
 
 Test Components
 ├── test_scoring_service.py (mock service)
@@ -208,8 +210,8 @@ Test Components
 
 ```
 ┌─────────────────┐    TCP/Protobuf    ┌──────────────────┐
-│   MT4/MT5 EA    │◄──────────────────►│ Scoring Service  │
-│                 │                    │                  │
+│ MT4/MT5 Server   │◄──────────────────►│ Scoring Service  │
+│    C++ Plugin    │                    │                  │
 │ • Real-time     │                    │ • ML Model       │
 │   Trade Det.    │                    │ • 51-field       │
 │ • Feature       │                    │   Features       │
@@ -255,24 +257,24 @@ Test Components
 python test_scoring_service.py
 ```
 
-### 2. Install MT4/MT5 Plugin
+### 2. Build and Install Server Plugin
 
-**For MT4:**
-1. Copy `MT4_ABBook_Router.mq4` to `[MT4_DATA]/MQL4/Experts/`
-2. Copy `ABBook_Config.ini` to `[MT4_DATA]/MQL4/Files/`
-3. Compile the EA in MetaEditor
+**Build Plugin:**
+1. Run `build_plugin.bat` to compile the C++ plugin
+2. This creates `ABBook_Plugin.dll` from the source files
+3. Ensure all dependencies are linked properly
 
-**For MT5:**
-1. Copy `MT5_ABBook_Router.mq5` to `[MT5_DATA]/MQL5/Experts/`
-2. Copy `ABBook_Config.ini` to `[MT5_DATA]/MQL5/Files/`
-3. Compile the EA in MetaEditor
+**Install Plugin:**
+1. Copy `ABBook_Plugin.dll` to MT4/MT5 server plugins directory
+2. Copy `ABBook_Config.ini` to server configuration directory
+3. Register plugin in MT4/MT5 server configuration file
 
-### 3. Configure and Run
+### 3. Configure and Deploy
 
-1. Attach the EA to any chart in MT4/MT5
-2. Configure the scoring service IP and port
-3. Adjust thresholds using the configuration panel
-4. Monitor logs for routing decisions
+1. Update `ABBook_Config.ini` with your scoring service details
+2. Configure thresholds per instrument group
+3. Restart MT4/MT5 server to load the plugin
+4. Monitor server logs for routing decisions
 
 ## Configuration
 
@@ -317,7 +319,7 @@ See `scoring.proto` for complete field definitions.
 ## Monitoring and Logging
 
 ### File Logging
-- Location: `MQL4/5/Files/ABBook_YYYY-MM-DD.log`
+- Location: `Server/Logs/ABBook_YYYY-MM-DD.log`
 - Format: Timestamped trade decisions with full context
 - Rotation: Daily
 
@@ -432,7 +434,7 @@ void RouteToABook(int ticket, string reason)
 4. **Integration APIs**: Add broker-specific integration points
 
 ### Code Structure
-- **Main EA**: Core routing logic and service communication
+- **Main Plugin**: Core routing logic and service communication
 - **Configuration**: File-based threshold management
 - **Logging**: Comprehensive audit trail
 - **Protobuf**: Message serialization/deserialization
