@@ -1,0 +1,76 @@
+syntax = "proto3";
+package scoring;
+
+// Client → Server request carries these features in this exact order:
+message ScoringRequest {
+  // Identifier for the request
+  string user_id = 1;
+
+  // Numeric features (dtype=float32)
+  float open_price = 2; // f0
+  float sl = 3; // f1
+  float tp = 4; // f2
+  float deal_type = 5; // f3
+  float lot_volume = 6; // f4
+  float is_bonus = 7; // f5
+  float turnover_usd = 8; // f6
+  float opening_balance = 9; // f7
+  float concurrent_positions = 10; // f8
+  float sl_perc = 11; // f9
+  float tp_perc = 12; // f10
+  float has_sl = 13; // f11
+  float has_tp = 14; // f12
+  float profitable_ratio = 15; // f13
+  float num_open_trades = 16; // f14
+  float num_closed_trades = 17; // f15
+  float age = 18; // f16
+  float days_since_reg = 19; // f17
+  float deposit_lifetime = 20; // f18
+  float deposit_count = 21; // f19
+  float withdraw_lifetime = 22; // f20
+  float withdraw_count = 23; // f21
+  float vip = 24; // f22
+  float holding_time_sec = 25; // f23
+  float sl_missing = 26; // f24
+  float tp_missing = 27; // f25
+  float lot_usd_value = 28; // f26
+  float exposure_to_balance_ratio = 29; // f27
+  float rapid_entry_exit = 30; // f28
+  float abuse_risk_score = 31; // f29
+  float trader_tenure_days = 32; // f30
+  float deposit_to_withdraw_ratio = 33; // f31
+  float education_known = 34; // f32
+  float occupation_known = 35; // f33
+  float lot_to_balance_ratio = 36; // f34
+  float deposit_density = 37; // f35
+  float withdrawal_density = 38; // f36
+  float turnover_per_trade = 39; // f37
+
+  // String features (dtype=string)
+  string symbol = 40; // f38
+  string inst_group = 41; // f39
+  string frequency = 42; // f40
+  string trading_group = 43; // f41
+  string licence = 44; // f42
+  string platform = 45; // f43
+  string LEVEL_OF_EDUCATION = 46; // f44
+  string OCCUPATION = 47; // f45
+  string SOURCE_OF_WEALTH = 48; // f46
+  string ANNUAL_DISPOSABLE_INCOME = 49; // f47
+  string AVERAGE_FREQUENCY_OF_TRADES = 50; // f48
+  string EMPLOYMENT_STATUS = 51; // f49
+  string country_code = 52; // f50
+  string utm_medium = 53; // f51
+}
+
+// Server → Client response
+message ScoringResponse {
+  string user_id = 1;
+  float score = 2;
+  repeated string warnings = 3;
+}
+
+// RPC service definition.
+service ScoringService {
+  rpc Score (ScoringRequest) returns (ScoringResponse);
+} 

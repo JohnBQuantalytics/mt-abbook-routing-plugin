@@ -1,0 +1,6 @@
+EXPORTS
+OnTradeRequest
+OnTradeClose
+OnConfigUpdate
+PluginInit
+PluginCleanup 
