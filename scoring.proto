@@ -53,12 +53,12 @@ message ScoringRequest {
   string trading_group = 43; // f41
   string licence = 44; // f42
   string platform = 45; // f43
-  string LEVEL_OF_EDUCATION = 46; // f44
-  string OCCUPATION = 47; // f45
-  string SOURCE_OF_WEALTH = 48; // f46
-  string ANNUAL_DISPOSABLE_INCOME = 49; // f47
-  string AVERAGE_FREQUENCY_OF_TRADES = 50; // f48
-  string EMPLOYMENT_STATUS = 51; // f49
+  string level_of_education = 46; // f44
+  string occupation = 47; // f45
+  string source_of_wealth = 48; // f46
+  string annual_disposable_income = 49; // f47
+  string average_frequency_of_trades = 50; // f48
+  string employment_status = 51; // f49
   string country_code = 52; // f50
   string utm_medium = 53; // f51
 }

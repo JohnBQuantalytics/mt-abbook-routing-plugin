@@ -9,7 +9,7 @@ A comprehensive server-side plugin system for MetaTrader 4 and MetaTrader 5 that
 - **Fallback Mechanism**: Automatic fallback when scoring service is unavailable
 - **Comprehensive Logging**: Detailed trade routing decisions and performance metrics
 - **InfluxDB Integration**: Optional metrics export for monitoring and analytics
-- **GUI Configuration**: Easy-to-use configuration panel for threshold management
+- **File-based Configuration**: Easy-to-update INI file for threshold management
 - **Broker Agnostic**: Designed to work with any MT4/MT5 broker platform
 
 ## File Documentation

@@ -109,8 +109,8 @@ public:
         json += "\"inst_group\":\"" + std::string(request.inst_group) + "\"";
         json += "}";
         
-        // Send length-prefixed message
-        uint32_t length = htonl(json.length());
+        // Send length-prefixed message (little-endian to match test service)
+        uint32_t length = json.length();
         send(sock, (char*)&length, sizeof(length), 0);
         send(sock, json.c_str(), json.length(), 0);
         
@@ -121,7 +121,7 @@ public:
             return g_config.fallback_score;
         }
         
-        response_length = ntohl(response_length);
+        // Response length already in little-endian from test service
         char buffer[1024];
         if (recv(sock, buffer, response_length, 0) <= 0) {
             closesocket(sock);
