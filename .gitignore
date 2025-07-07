@@ -1,0 +1,26 @@
+# Compiled DLL files
+*.dll
+*.lib
+*.exp
+*.obj
+*.pdb
+
+# Visual Studio files
+*.sdf
+*.opensdf
+*.vcxproj.user
+*.suo
+*.sln.docstates
+
+# Build output
+Debug/
+Release/
+x64/
+x86/
+
+# Log files
+*.log
+
+# Temporary files
+*.tmp
+*.temp 
