@@ -5,6 +5,7 @@ A comprehensive server-side plugin system for MetaTrader 4 and MetaTrader 5 that
 ## Features
 
 - **Real-time Scoring**: Integrates with external ML scoring service via TCP/Protobuf
+- **Score Caching**: High-performance caching system for burst trading scenarios (300ms TTL)
 - **Configurable Thresholds**: Per-instrument group routing thresholds
 - **Fallback Mechanism**: Automatic fallback when scoring service is unavailable
 - **Comprehensive Logging**: Detailed trade routing decisions and performance metrics
@@ -294,6 +295,24 @@ python test_scoring_service.py
 - **Score ≥ Threshold**: Route to B-book
 - **Score < Threshold**: Route to A-book
 - **Service Unavailable**: Use fallback score (default: route to A-book)
+
+### Score Caching
+
+The system includes intelligent caching to handle high-frequency trading scenarios:
+
+- **Cache TTL**: 300ms default (configurable)
+- **Cache Size**: 1000 entries max (auto-cleanup)
+- **Cache Key**: Based on user_id, symbol, lot_volume, price, and account balance
+- **Thread-Safe**: Uses atomic counters and mutex locks for concurrent access
+- **Hit/Miss Tracking**: Monitor cache performance in real-time
+
+**Configuration:**
+```ini
+[Score_Cache]
+EnableCache=true
+CacheTTL=300
+MaxCacheSize=1000
+```
 
 ## Scoring Model Features
 

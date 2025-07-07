@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <unordered_map>
 #include <thread>
 #include <mutex>
 #include <queue>
@@ -19,6 +20,8 @@
 #include <chrono>
 #include <ctime>
 #include <iostream>
+#include <sstream>
+#include <atomic>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -87,6 +90,10 @@ struct PluginConfig {
     char api_key[128];
     bool enable_influx_logging;
     char influx_url[256];
+    // Cache settings
+    bool enable_cache;
+    int cache_ttl;
+    int max_cache_size;
 };
 
 // Protobuf structures (simplified for C++)
@@ -173,11 +180,71 @@ struct ExternalClientData {
     // ... other external fields
 };
 
+// Score caching system for high-frequency trading
+struct CachedScore {
+    float score;
+    std::chrono::steady_clock::time_point timestamp;
+    std::string request_hash;
+};
+
+class ScoreCache {
+private:
+    std::unordered_map<std::string, CachedScore> cache;
+    std::mutex cache_mutex;
+    std::chrono::milliseconds ttl{300}; // 300ms TTL for high-frequency scenarios
+    std::atomic<int> hit_count{0};
+    std::atomic<int> miss_count{0};
+    
+public:
+    bool GetCachedScore(const std::string& key, float& score) {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        auto it = cache.find(key);
+        if (it != cache.end()) {
+            auto age = std::chrono::steady_clock::now() - it->second.timestamp;
+            if (age < ttl) {
+                score = it->second.score;
+                hit_count++;
+                return true;
+            }
+            cache.erase(it); // Remove expired entry
+        }
+        miss_count++;
+        return false;
+    }
+    
+    void SetCachedScore(const std::string& key, float score) {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        cache[key] = {score, std::chrono::steady_clock::now(), key};
+        
+        // Cleanup old entries if cache gets too large
+        if (cache.size() > 1000) {
+            auto now = std::chrono::steady_clock::now();
+            auto it = cache.begin();
+            while (it != cache.end()) {
+                if (now - it->second.timestamp > ttl) {
+                    it = cache.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+    }
+    
+    void SetTTL(int milliseconds) {
+        ttl = std::chrono::milliseconds(milliseconds);
+    }
+    
+    std::pair<int, int> GetStats() {
+        return {hit_count.load(), miss_count.load()};
+    }
+};
+
 // Global variables
 static PluginConfig g_config;
 static std::mutex g_config_mutex;
 static std::map<int, int> g_position_routing; // ticket -> routing decision
 static std::mutex g_position_mutex;
+static ScoreCache g_score_cache; // Global score cache
 
 // Logging system
 class AsyncLogger {
@@ -361,6 +428,11 @@ bool LoadConfiguration() {
         return false;
     }
     
+    // Set default cache settings
+    g_config.enable_cache = true;
+    g_config.cache_ttl = 300;
+    g_config.max_cache_size = 1000;
+    
     std::string line;
     while (std::getline(config_file, line)) {
         if (line.find("CVM_IP=") == 0) {
@@ -371,6 +443,12 @@ bool LoadConfiguration() {
             g_config.connection_timeout = std::stoi(line.substr(18));
         } else if (line.find("FallbackScore=") == 0) {
             g_config.fallback_score = std::stod(line.substr(14));
+        } else if (line.find("EnableCache=") == 0) {
+            g_config.enable_cache = (line.substr(12) == "true");
+        } else if (line.find("CacheTTL=") == 0) {
+            g_config.cache_ttl = std::stoi(line.substr(9));
+        } else if (line.find("MaxCacheSize=") == 0) {
+            g_config.max_cache_size = std::stoi(line.substr(13));
         } else if (line.find("Threshold_FXMajors=") == 0) {
             g_config.thresholds[0] = std::stod(line.substr(19));
         } else if (line.find("Threshold_Crypto=") == 0) {
@@ -378,6 +456,9 @@ bool LoadConfiguration() {
         }
         // Parse other configuration options...
     }
+    
+    // Configure cache with loaded settings
+    g_score_cache.SetTTL(g_config.cache_ttl);
     
     return true;
 }
@@ -526,9 +607,24 @@ int ProcessTradeRouting(const TradeRequest* trade, TradeResult* result) {
         ScoringRequest scoring_req;
         BuildScoringRequest(trade, &account, &ext_data, &scoring_req);
         
-        // Get score from CVM
-        CVMClient cvm_client;
-        float score = cvm_client.GetScore(scoring_req);
+        // Try to get cached score first (if caching is enabled)
+        float score = g_config.fallback_score;
+        
+        if (g_config.enable_cache) {
+            std::string cache_key = GenerateRequestHash(scoring_req);
+            if (!g_score_cache.GetCachedScore(cache_key, score)) {
+                // Cache miss - get score from CVM
+                CVMClient cvm_client;
+                score = cvm_client.GetScore(scoring_req);
+                
+                // Cache the result for future requests
+                g_score_cache.SetCachedScore(cache_key, score);
+            }
+        } else {
+            // Caching disabled - get score directly
+            CVMClient cvm_client;
+            score = cvm_client.GetScore(scoring_req);
+        }
         
         // Get threshold
         const char* inst_group = GetInstrumentGroup(trade->symbol);
@@ -559,6 +655,15 @@ int ProcessTradeRouting(const TradeRequest* trade, TradeResult* result) {
         strcpy_s(result->reason, "ERROR_FALLBACK");
         return MT_RET_ERROR;
     }
+}
+
+// Generate cache key from scoring request
+std::string GenerateRequestHash(const ScoringRequest& req) {
+    std::stringstream ss;
+    ss << req.user_id << "|" << req.symbol << "|" << req.lot_volume 
+       << "|" << static_cast<int>(req.open_price * 100000) // Price to 5 decimals
+       << "|" << req.deal_type << "|" << static_cast<int>(req.opening_balance);
+    return ss.str();
 }
 
 // Plugin entry points (need actual MT Server SDK for proper signatures)
