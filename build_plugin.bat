@@ -42,7 +42,7 @@ echo Using Visual Studio compiler...
 
 REM Compile the plugin
 cl.exe /LD /EHsc /I. /DWIN32 /D_WINDOWS /D_USRDLL ^
-    MT4_Server_Plugin.cpp ^
+    MT4_ABBook_Plugin.cpp ^
     /link ws2_32.lib ^
     /OUT:ABBook_Plugin.dll ^
     /DEF:plugin_exports.def
