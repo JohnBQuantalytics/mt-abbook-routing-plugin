@@ -1,6 +1,7 @@
 /*
  * MT4_ABBook_Plugin.cpp
  * Server-side C++ plugin for real-time scoring-based A/B-book routing
+ * Enhanced with comprehensive logging for debugging
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -16,8 +17,83 @@
 #include <iostream>
 #include <sstream>
 #include <atomic>
+#include <iomanip>
 
 #pragma comment(lib, "ws2_32.lib")
+
+// Enhanced logging system
+class PluginLogger {
+private:
+    std::mutex log_mutex;
+    std::string log_file;
+    
+public:
+    PluginLogger() : log_file("ABBook_Plugin_Debug.log") {
+        // Clear log file on startup
+        std::ofstream file(log_file, std::ios::trunc);
+        if (file.is_open()) {
+            file << "=== ABBook Plugin Debug Log Started ===" << std::endl;
+            file << "Timestamp: " << GetTimestamp() << std::endl;
+            file << "============================================" << std::endl;
+            file.close();
+        }
+    }
+    
+    std::string GetTimestamp() {
+        auto now = std::chrono::system_clock::now();
+        auto time_t = std::chrono::system_clock::to_time_t(now);
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now.time_since_epoch()) % 1000;
+            
+        char buffer[100];
+        std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", std::localtime(&time_t));
+        
+        std::ostringstream oss;
+        oss << buffer << "." << std::setfill('0') << std::setw(3) << ms.count();
+        return oss.str();
+    }
+    
+    void Log(const std::string& level, const std::string& message) {
+        std::lock_guard<std::mutex> lock(log_mutex);
+        std::ofstream file(log_file, std::ios::app);
+        if (file.is_open()) {
+            file << "[" << GetTimestamp() << "] [" << level << "] " << message << std::endl;
+            file.close();
+        }
+        
+        // Also log to console if available
+        std::cout << "[" << GetTimestamp() << "] [" << level << "] " << message << std::endl;
+    }
+    
+    void LogError(const std::string& message) { Log("ERROR", message); }
+    void LogWarning(const std::string& message) { Log("WARN", message); }
+    void LogInfo(const std::string& message) { Log("INFO", message); }
+    void LogDebug(const std::string& message) { Log("DEBUG", message); }
+    
+    void LogWinError(const std::string& operation) {
+        DWORD error = GetLastError();
+        char* errorMsg = nullptr;
+        FormatMessageA(
+            FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
+            NULL, error, 0, (LPSTR)&errorMsg, 0, NULL);
+        
+        std::string msg = operation + " failed with error " + std::to_string(error);
+        if (errorMsg) {
+            msg += ": " + std::string(errorMsg);
+            LocalFree(errorMsg);
+        }
+        LogError(msg);
+    }
+    
+    void LogSocketError(const std::string& operation) {
+        int error = WSAGetLastError();
+        std::string msg = operation + " failed with WSA error " + std::to_string(error);
+        LogError(msg);
+    }
+};
+
+// Global logger instance
+PluginLogger g_logger;
 
 // MT Server integration structures
 struct TradeRequest {
@@ -225,67 +301,129 @@ public:
 
 // Configuration management
 bool LoadConfiguration() {
-    // Set defaults
-    strcpy_s(g_config.cvm_ip, "127.0.0.1");
-    g_config.cvm_port = 8080;
-    g_config.connection_timeout = 5000;
-    g_config.fallback_score = 0.0;
-    g_config.force_a_book = false;
-    g_config.force_b_book = false;
-    g_config.enable_cache = true;
-    g_config.cache_ttl = 300;
-    g_config.max_cache_size = 1000;
+    g_logger.LogInfo("Starting configuration loading...");
     
-    // Default thresholds
-    g_config.thresholds[0] = 0.08; // FXMajors
-    g_config.thresholds[1] = 0.12; // Crypto
-    g_config.thresholds[2] = 0.06; // Metals
-    g_config.thresholds[3] = 0.10; // Energy
-    g_config.thresholds[4] = 0.07; // Indices
-    g_config.thresholds[5] = 0.05; // Other
-    
-    std::ifstream config_file("ABBook_Config.ini");
-    if (!config_file.is_open()) {
-        return true; // Use defaults
-    }
-    
-    std::string line;
-    while (std::getline(config_file, line)) {
-        if (line.find("CVM_IP=") == 0) {
-            strcpy_s(g_config.cvm_ip, line.substr(7).c_str());
-        } else if (line.find("CVM_Port=") == 0) {
-            g_config.cvm_port = std::stoi(line.substr(9));
-        } else if (line.find("ConnectionTimeout=") == 0) {
-            g_config.connection_timeout = std::stoi(line.substr(18));
-        } else if (line.find("FallbackScore=") == 0) {
-            g_config.fallback_score = std::stod(line.substr(14));
-        } else if (line.find("EnableCache=") == 0) {
-            g_config.enable_cache = (line.substr(12) == "true");
-        } else if (line.find("CacheTTL=") == 0) {
-            g_config.cache_ttl = std::stoi(line.substr(9));
-        } else if (line.find("ForceABook=") == 0) {
-            g_config.force_a_book = (line.substr(11) == "true");
-        } else if (line.find("ForceBBook=") == 0) {
-            g_config.force_b_book = (line.substr(11) == "true");
-        } else if (line.find("Threshold_FXMajors=") == 0) {
-            g_config.thresholds[0] = std::stod(line.substr(19));
-        } else if (line.find("Threshold_Crypto=") == 0) {
-            g_config.thresholds[1] = std::stod(line.substr(17));
-        } else if (line.find("Threshold_Metals=") == 0) {
-            g_config.thresholds[2] = std::stod(line.substr(17));
-        } else if (line.find("Threshold_Energy=") == 0) {
-            g_config.thresholds[3] = std::stod(line.substr(17));
-        } else if (line.find("Threshold_Indices=") == 0) {
-            g_config.thresholds[4] = std::stod(line.substr(18));
-        } else if (line.find("Threshold_Other=") == 0) {
-            g_config.thresholds[5] = std::stod(line.substr(16));
+    try {
+        // Set defaults
+        g_logger.LogInfo("Setting default configuration values...");
+        strcpy_s(g_config.cvm_ip, "127.0.0.1");
+        g_config.cvm_port = 8080;
+        g_config.connection_timeout = 5000;
+        g_config.fallback_score = 0.0;
+        g_config.force_a_book = false;
+        g_config.force_b_book = false;
+        g_config.enable_cache = true;
+        g_config.cache_ttl = 300;
+        g_config.max_cache_size = 1000;
+        
+        // Default thresholds
+        g_config.thresholds[0] = 0.08; // FXMajors
+        g_config.thresholds[1] = 0.12; // Crypto
+        g_config.thresholds[2] = 0.06; // Metals
+        g_config.thresholds[3] = 0.10; // Energy
+        g_config.thresholds[4] = 0.07; // Indices
+        g_config.thresholds[5] = 0.05; // Other
+        
+        g_logger.LogInfo("Default configuration values set successfully");
+        
+        std::ifstream config_file("ABBook_Config.ini");
+        if (!config_file.is_open()) {
+            g_logger.LogWarning("Configuration file ABBook_Config.ini not found, using defaults");
+            return true; // Use defaults
         }
+        
+        g_logger.LogInfo("Configuration file opened successfully");
+        
+        std::string line;
+        int line_count = 0;
+        while (std::getline(config_file, line)) {
+            line_count++;
+            
+            // Skip empty lines and comments
+            if (line.empty() || line[0] == '#' || line[0] == ';' || line[0] == '[') {
+                continue;
+            }
+            
+            g_logger.LogDebug("Processing config line " + std::to_string(line_count) + ": " + line);
+            
+            try {
+                if (line.find("CVM_IP=") == 0) {
+                    std::string ip = line.substr(7);
+                    strcpy_s(g_config.cvm_ip, ip.c_str());
+                    g_logger.LogInfo("CVM_IP set to: " + ip);
+                } else if (line.find("CVM_Port=") == 0) {
+                    g_config.cvm_port = std::stoi(line.substr(9));
+                    g_logger.LogInfo("CVM_Port set to: " + std::to_string(g_config.cvm_port));
+                } else if (line.find("ConnectionTimeout=") == 0) {
+                    g_config.connection_timeout = std::stoi(line.substr(18));
+                    g_logger.LogInfo("ConnectionTimeout set to: " + std::to_string(g_config.connection_timeout));
+                } else if (line.find("FallbackScore=") == 0) {
+                    g_config.fallback_score = std::stod(line.substr(14));
+                    g_logger.LogInfo("FallbackScore set to: " + std::to_string(g_config.fallback_score));
+                } else if (line.find("EnableCache=") == 0) {
+                    g_config.enable_cache = (line.substr(12) == "true");
+                    g_logger.LogInfo("EnableCache set to: " + std::string(g_config.enable_cache ? "true" : "false"));
+                } else if (line.find("CacheTTL=") == 0) {
+                    g_config.cache_ttl = std::stoi(line.substr(9));
+                    g_logger.LogInfo("CacheTTL set to: " + std::to_string(g_config.cache_ttl));
+                } else if (line.find("ForceABook=") == 0) {
+                    g_config.force_a_book = (line.substr(11) == "true");
+                    g_logger.LogInfo("ForceABook set to: " + std::string(g_config.force_a_book ? "true" : "false"));
+                } else if (line.find("ForceBBook=") == 0) {
+                    g_config.force_b_book = (line.substr(11) == "true");
+                    g_logger.LogInfo("ForceBBook set to: " + std::string(g_config.force_b_book ? "true" : "false"));
+                } else if (line.find("Threshold_FXMajors=") == 0) {
+                    g_config.thresholds[0] = std::stod(line.substr(19));
+                    g_logger.LogInfo("Threshold_FXMajors set to: " + std::to_string(g_config.thresholds[0]));
+                } else if (line.find("Threshold_Crypto=") == 0) {
+                    g_config.thresholds[1] = std::stod(line.substr(17));
+                    g_logger.LogInfo("Threshold_Crypto set to: " + std::to_string(g_config.thresholds[1]));
+                } else if (line.find("Threshold_Metals=") == 0) {
+                    g_config.thresholds[2] = std::stod(line.substr(17));
+                    g_logger.LogInfo("Threshold_Metals set to: " + std::to_string(g_config.thresholds[2]));
+                } else if (line.find("Threshold_Energy=") == 0) {
+                    g_config.thresholds[3] = std::stod(line.substr(17));
+                    g_logger.LogInfo("Threshold_Energy set to: " + std::to_string(g_config.thresholds[3]));
+                } else if (line.find("Threshold_Indices=") == 0) {
+                    g_config.thresholds[4] = std::stod(line.substr(18));
+                    g_logger.LogInfo("Threshold_Indices set to: " + std::to_string(g_config.thresholds[4]));
+                } else if (line.find("Threshold_Other=") == 0) {
+                    g_config.thresholds[5] = std::stod(line.substr(16));
+                    g_logger.LogInfo("Threshold_Other set to: " + std::to_string(g_config.thresholds[5]));
+                } else {
+                    g_logger.LogWarning("Unknown configuration line: " + line);
+                }
+            } catch (const std::exception& e) {
+                g_logger.LogError("Error parsing config line " + std::to_string(line_count) + ": " + e.what());
+            }
+        }
+        
+        g_logger.LogInfo("Configuration file parsed successfully, processed " + std::to_string(line_count) + " lines");
+        
+        // Configure cache with loaded settings
+        g_score_cache.SetTTL(g_config.cache_ttl);
+        g_logger.LogInfo("Cache configured with TTL: " + std::to_string(g_config.cache_ttl));
+        
+        // Log final configuration
+        g_logger.LogInfo("Final configuration:");
+        g_logger.LogInfo("  CVM_IP: " + std::string(g_config.cvm_ip));
+        g_logger.LogInfo("  CVM_Port: " + std::to_string(g_config.cvm_port));
+        g_logger.LogInfo("  Connection Timeout: " + std::to_string(g_config.connection_timeout));
+        g_logger.LogInfo("  Fallback Score: " + std::to_string(g_config.fallback_score));
+        g_logger.LogInfo("  Force A-Book: " + std::string(g_config.force_a_book ? "true" : "false"));
+        g_logger.LogInfo("  Force B-Book: " + std::string(g_config.force_b_book ? "true" : "false"));
+        g_logger.LogInfo("  Cache Enabled: " + std::string(g_config.enable_cache ? "true" : "false"));
+        
+        g_logger.LogInfo("Configuration loading completed successfully");
+        return true;
+        
+    } catch (const std::exception& e) {
+        g_logger.LogError("Exception in LoadConfiguration: " + std::string(e.what()));
+        return false;
+    } catch (...) {
+        g_logger.LogError("Unknown exception in LoadConfiguration");
+        return false;
     }
-    
-    // Configure cache with loaded settings
-    g_score_cache.SetTTL(g_config.cache_ttl);
-    
-    return true;
 }
 
 // Utility functions
@@ -425,73 +563,321 @@ int ProcessTradeRouting(const TradeRequest* trade, TradeResult* result) {
 
 // Plugin API exports
 extern "C" {
-    
-    // Main trade request handler
-    __declspec(dllexport) int OnTradeRequest(TradeRequest* request, TradeResult* result, void* server_context) {
-        return ProcessTradeRouting(request, result);
+    __declspec(dllexport) int __stdcall OnTradeRequest(TradeRequest* request, TradeResult* result, void* server_context) {
+        g_logger.LogInfo("=== OnTradeRequest() called ===");
+        
+        try {
+            // Validate input parameters
+            if (!request) {
+                g_logger.LogError("OnTradeRequest: request parameter is NULL");
+                return MT_RET_ERROR;
+            }
+            
+            if (!result) {
+                g_logger.LogError("OnTradeRequest: result parameter is NULL");
+                return MT_RET_ERROR;
+            }
+            
+            // Log trade request details
+            g_logger.LogInfo("Trade request details:");
+            g_logger.LogInfo("  Login: " + std::to_string(request->login));
+            g_logger.LogInfo("  Symbol: " + std::string(request->symbol));
+            g_logger.LogInfo("  Type: " + std::string(request->type == 0 ? "BUY" : "SELL"));
+            g_logger.LogInfo("  Volume: " + std::to_string(request->volume));
+            g_logger.LogInfo("  Price: " + std::to_string(request->price));
+            g_logger.LogInfo("  SL: " + std::to_string(request->sl));
+            g_logger.LogInfo("  TP: " + std::to_string(request->tp));
+            g_logger.LogInfo("  Comment: " + std::string(request->comment));
+            
+            // Log server context
+            g_logger.LogInfo("Server context: " + std::to_string(reinterpret_cast<uintptr_t>(server_context)));
+            
+            // Process the trade
+            int routing_result = ProcessTradeRouting(request, result);
+            
+            // Log result
+            g_logger.LogInfo("Trade routing result:");
+            g_logger.LogInfo("  Routing: " + std::string(result->routing == ROUTE_A_BOOK ? "A-BOOK" : "B-BOOK"));
+            g_logger.LogInfo("  Return code: " + std::to_string(result->retcode));
+            g_logger.LogInfo("  Reason: " + std::string(result->reason));
+            
+            g_logger.LogInfo("OnTradeRequest completed with result: " + std::to_string(routing_result));
+            return routing_result;
+            
+        } catch (const std::exception& e) {
+            g_logger.LogError("Exception in OnTradeRequest: " + std::string(e.what()));
+            if (result) {
+                result->routing = ROUTE_A_BOOK;
+                result->retcode = MT_RET_ERROR;
+                strcpy_s(result->reason, "EXCEPTION_ERROR");
+            }
+            return MT_RET_ERROR;
+        } catch (...) {
+            g_logger.LogError("Unknown exception in OnTradeRequest");
+            if (result) {
+                result->routing = ROUTE_A_BOOK;
+                result->retcode = MT_RET_ERROR;
+                strcpy_s(result->reason, "UNKNOWN_ERROR");
+            }
+            return MT_RET_ERROR;
+        }
     }
     
     // Trade close handler
-    __declspec(dllexport) int OnTradeClose(int login, int ticket, double volume, double price) {
-        // Just log the close - routing follows original decision
-        std::ofstream log_file("ABBook_Plugin.log", std::ios::app);
-        if (log_file.is_open()) {
-            auto now = std::time(nullptr);
-            char timestamp[32];
-            std::strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
-            
-            log_file << timestamp << " - CLOSE: Login:" << login << " Ticket:" << ticket << std::endl;
-            log_file.close();
-        }
+    __declspec(dllexport) int __stdcall OnTradeClose(int login, int ticket, double volume, double price) {
+        g_logger.LogInfo("=== OnTradeClose() called ===");
         
-        return MT_RET_OK;
+        try {
+            // Log trade close details
+            g_logger.LogInfo("Trade close details:");
+            g_logger.LogInfo("  Login: " + std::to_string(login));
+            g_logger.LogInfo("  Ticket: " + std::to_string(ticket));
+            g_logger.LogInfo("  Volume: " + std::to_string(volume));
+            g_logger.LogInfo("  Price: " + std::to_string(price));
+            
+            // Also log to the original log file for compatibility
+            std::ofstream log_file("ABBook_Plugin.log", std::ios::app);
+            if (log_file.is_open()) {
+                auto now = std::time(nullptr);
+                char timestamp[32];
+                std::strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+                
+                log_file << timestamp << " - CLOSE: Login:" << login << " Ticket:" << ticket << std::endl;
+                log_file.close();
+                g_logger.LogInfo("Trade close logged to ABBook_Plugin.log");
+            } else {
+                g_logger.LogError("Failed to write to ABBook_Plugin.log");
+            }
+            
+            g_logger.LogInfo("OnTradeClose completed successfully");
+            return MT_RET_OK;
+            
+        } catch (const std::exception& e) {
+            g_logger.LogError("Exception in OnTradeClose: " + std::string(e.what()));
+            return MT_RET_ERROR;
+        } catch (...) {
+            g_logger.LogError("Unknown exception in OnTradeClose");
+            return MT_RET_ERROR;
+        }
     }
     
     // Configuration reload
-    __declspec(dllexport) void OnConfigUpdate() {
-        std::lock_guard<std::mutex> lock(g_config_mutex);
-        LoadConfiguration();
+    __declspec(dllexport) void __stdcall OnConfigUpdate() {
+        g_logger.LogInfo("=== OnConfigUpdate() called ===");
+        
+        try {
+            std::lock_guard<std::mutex> lock(g_config_mutex);
+            g_logger.LogInfo("Configuration mutex acquired");
+            
+            g_logger.LogInfo("Reloading configuration...");
+            if (LoadConfiguration()) {
+                g_logger.LogInfo("Configuration reloaded successfully");
+            } else {
+                g_logger.LogError("Configuration reload failed");
+            }
+            
+            g_logger.LogInfo("OnConfigUpdate completed");
+            
+        } catch (const std::exception& e) {
+            g_logger.LogError("Exception in OnConfigUpdate: " + std::string(e.what()));
+        } catch (...) {
+            g_logger.LogError("Unknown exception in OnConfigUpdate");
+        }
     }
     
     // Plugin initialization
-    __declspec(dllexport) int PluginInit() {
-        // Initialize Winsock
-        WSADATA wsaData;
-        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-            return 1; // Failed
-        }
+    __declspec(dllexport) int __stdcall PluginInit() {
+        g_logger.LogInfo("=== PluginInit() called ===");
         
-        // Load configuration
-        if (!LoadConfiguration()) {
-            return 1; // Failed
+        try {
+            // Initialize Winsock
+            g_logger.LogInfo("Initializing Winsock...");
+            WSADATA wsaData;
+            int wsa_result = WSAStartup(MAKEWORD(2, 2), &wsaData);
+            if (wsa_result != 0) {
+                g_logger.LogError("WSAStartup failed with error: " + std::to_string(wsa_result));
+                g_logger.LogWinError("WSAStartup");
+                return 1; // Failed
+            }
+            
+            g_logger.LogInfo("Winsock initialized successfully");
+            g_logger.LogInfo("Winsock version: " + std::to_string(wsaData.wVersion));
+            g_logger.LogInfo("Winsock high version: " + std::to_string(wsaData.wHighVersion));
+            
+            // Load configuration
+            g_logger.LogInfo("Loading plugin configuration...");
+            if (!LoadConfiguration()) {
+                g_logger.LogError("Configuration loading failed");
+                return 1; // Failed
+            }
+            
+            g_logger.LogInfo("Configuration loaded successfully");
+            
+            // Test basic functionality
+            g_logger.LogInfo("Testing basic plugin functionality...");
+            
+            // Test file writing permissions
+            std::ofstream test_file("ABBook_Plugin.log", std::ios::app);
+            if (test_file.is_open()) {
+                auto now = std::time(nullptr);
+                char timestamp[32];
+                std::strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
+                test_file << timestamp << " - Plugin initialized with enhanced logging" << std::endl;
+                test_file.close();
+                g_logger.LogInfo("Log file write test successful");
+            } else {
+                g_logger.LogError("Failed to write to log file");
+            }
+            
+            // Test socket creation
+            g_logger.LogInfo("Testing socket creation...");
+            SOCKET test_sock = socket(AF_INET, SOCK_STREAM, 0);
+            if (test_sock == INVALID_SOCKET) {
+                g_logger.LogSocketError("Test socket creation");
+            } else {
+                g_logger.LogInfo("Socket creation test successful");
+                closesocket(test_sock);
+            }
+            
+            // Log system information
+            g_logger.LogInfo("System information:");
+            char computer_name[256];
+            DWORD size = sizeof(computer_name);
+            if (GetComputerNameA(computer_name, &size)) {
+                g_logger.LogInfo("Computer name: " + std::string(computer_name));
+            }
+            
+            // Log process information
+            g_logger.LogInfo("Process ID: " + std::to_string(GetCurrentProcessId()));
+            g_logger.LogInfo("Thread ID: " + std::to_string(GetCurrentThreadId()));
+            
+            // Log working directory
+            char working_dir[MAX_PATH];
+            if (GetCurrentDirectoryA(MAX_PATH, working_dir)) {
+                g_logger.LogInfo("Working directory: " + std::string(working_dir));
+            }
+            
+            // Log plugin module information
+            HMODULE hModule = GetModuleHandleA("ABBook_Plugin_32bit.dll");
+            if (hModule) {
+                char module_path[MAX_PATH];
+                if (GetModuleFileNameA(hModule, module_path, MAX_PATH)) {
+                    g_logger.LogInfo("Plugin module path: " + std::string(module_path));
+                }
+            }
+            
+            g_logger.LogInfo("Plugin initialization completed successfully");
+            g_logger.LogInfo("=== PluginInit() completed with success ===");
+            
+            return 0; // Success
+            
+        } catch (const std::exception& e) {
+            g_logger.LogError("Exception in PluginInit: " + std::string(e.what()));
+            return 1;
+        } catch (...) {
+            g_logger.LogError("Unknown exception in PluginInit");
+            return 1;
         }
-        
-        // Log startup
-        std::ofstream log_file("ABBook_Plugin.log", std::ios::app);
-        if (log_file.is_open()) {
-            auto now = std::time(nullptr);
-            char timestamp[32];
-            std::strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
-            log_file << timestamp << " - Plugin initialized with caching enabled" << std::endl;
-            log_file.close();
-        }
-        
-        return 0; // Success
     }
     
     // Plugin cleanup
-    __declspec(dllexport) void PluginCleanup() {
-        WSACleanup();
+    __declspec(dllexport) void __stdcall PluginCleanup() {
+        g_logger.LogInfo("=== PluginCleanup() called ===");
+        
+        try {
+            g_logger.LogInfo("Cleaning up Winsock...");
+            WSACleanup();
+            g_logger.LogInfo("Winsock cleanup completed");
+            
+            g_logger.LogInfo("Plugin cleanup completed successfully");
+            
+        } catch (const std::exception& e) {
+            g_logger.LogError("Exception in PluginCleanup: " + std::string(e.what()));
+        } catch (...) {
+            g_logger.LogError("Unknown exception in PluginCleanup");
+        }
     }
 }
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
-    switch (ul_reason_for_call) {
-    case DLL_PROCESS_ATTACH:
-    case DLL_THREAD_ATTACH:
-    case DLL_THREAD_DETACH:
-    case DLL_PROCESS_DETACH:
-        break;
+    try {
+        switch (ul_reason_for_call) {
+        case DLL_PROCESS_ATTACH:
+            {
+                g_logger.LogInfo("=== DLL_PROCESS_ATTACH ===");
+                g_logger.LogInfo("DLL is being loaded into process");
+                g_logger.LogInfo("Module handle: " + std::to_string(reinterpret_cast<uintptr_t>(hModule)));
+                
+                // Log process information
+                g_logger.LogInfo("Process ID: " + std::to_string(GetCurrentProcessId()));
+                g_logger.LogInfo("Thread ID: " + std::to_string(GetCurrentThreadId()));
+                
+                // Get process name
+                char process_name[MAX_PATH];
+                if (GetModuleFileNameA(NULL, process_name, MAX_PATH)) {
+                    g_logger.LogInfo("Process name: " + std::string(process_name));
+                }
+                
+                // Get DLL path
+                char dll_path[MAX_PATH];
+                if (GetModuleFileNameA(hModule, dll_path, MAX_PATH)) {
+                    g_logger.LogInfo("DLL path: " + std::string(dll_path));
+                }
+                
+                // Log if this is called from MT4 server
+                std::string proc_name = process_name;
+                if (proc_name.find("terminal") != std::string::npos || 
+                    proc_name.find("mt4") != std::string::npos ||
+                    proc_name.find("mt5") != std::string::npos) {
+                    g_logger.LogInfo("Detected MT4/MT5 process");
+                }
+                
+                g_logger.LogInfo("DLL_PROCESS_ATTACH completed successfully");
+                break;
+            }
+            
+        case DLL_THREAD_ATTACH:
+            g_logger.LogDebug("DLL_THREAD_ATTACH - Thread ID: " + std::to_string(GetCurrentThreadId()));
+            break;
+            
+        case DLL_THREAD_DETACH:
+            g_logger.LogDebug("DLL_THREAD_DETACH - Thread ID: " + std::to_string(GetCurrentThreadId()));
+            break;
+            
+        case DLL_PROCESS_DETACH:
+            {
+                g_logger.LogInfo("=== DLL_PROCESS_DETACH ===");
+                g_logger.LogInfo("DLL is being unloaded from process");
+                g_logger.LogInfo("Process ID: " + std::to_string(GetCurrentProcessId()));
+                
+                if (lpReserved != NULL) {
+                    g_logger.LogInfo("Process is terminating");
+                } else {
+                    g_logger.LogInfo("DLL is being unloaded via FreeLibrary");
+                }
+                
+                g_logger.LogInfo("DLL_PROCESS_DETACH completed");
+                break;
+            }
+        }
+        
+        return TRUE;
+        
+    } catch (const std::exception& e) {
+        // Cannot use logger here as it might not be initialized
+        std::ofstream emergency_log("ABBook_Plugin_Emergency.log", std::ios::app);
+        if (emergency_log.is_open()) {
+            emergency_log << "DllMain exception: " << e.what() << std::endl;
+            emergency_log.close();
+        }
+        return FALSE;
+    } catch (...) {
+        // Cannot use logger here as it might not be initialized
+        std::ofstream emergency_log("ABBook_Plugin_Emergency.log", std::ios::app);
+        if (emergency_log.is_open()) {
+            emergency_log << "DllMain unknown exception" << std::endl;
+            emergency_log.close();
+        }
+        return FALSE;
     }
-    return TRUE;
 } 
