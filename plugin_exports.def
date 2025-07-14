@@ -1,6 +1,6 @@
 EXPORTS
-OnTradeRequest
-OnTradeClose
-OnConfigUpdate
-PluginInit
-PluginCleanup 
+MtSrvStartup
+MtSrvCleanup
+MtSrvAbout
+MtSrvTradeTransaction
+MtSrvConfigUpdate 

@@ -1,7 +1,7 @@
 /*
  * MT4_ABBook_Plugin.cpp
  * Server-side C++ plugin for real-time scoring-based A/B-book routing
- * Enhanced with comprehensive logging for debugging
+ * Updated with MT4-compatible function signatures
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -95,31 +95,75 @@ public:
 // Global logger instance
 PluginLogger g_logger;
 
-// MT Server integration structures
-struct TradeRequest {
-    int login;
-    char symbol[16];
-    int type;          // 0=buy, 1=sell
-    double volume;
-    double price;
-    double sl;
-    double tp;
-    char comment[64];
+// MT4-compatible structures based on MT4ManagerAPI.h patterns
+struct MT4TradeRecord {
+    int order;           // order ticket
+    int login;           // client login
+    char symbol[12];     // security
+    int digits;          // security precision
+    int cmd;             // trade command
+    int volume;          // volume (in lots*100)
+    __time32_t open_time; // open time
+    int state;           // reserved
+    double open_price;   // open price
+    double sl, tp;       // stop loss and take profit
+    __time32_t close_time; // close time
+    int gw_volume;       // gateway volume
+    __time32_t expiration; // pending order expiration time
+    char reason;         // trade reason
+    char conv_rates[2];  // currency conversion rates
+    double commission;   // commission
+    double commission_agent; // agent commission
+    double storage;      // order swaps
+    double close_price;  // close price
+    double profit;       // profit
+    double taxes;        // taxes
+    int magic;           // special value used by client experts
+    char comment[32];    // comment
+    int gw_order;        // gateway order ticket
+    int activation;      // used by MT Manager
+    short gw_open_price; // gateway open price (relative)
+    short gw_close_price; // gateway close price (relative)
+    int margin_rate;     // margin conversion rate
+    __time32_t timestamp; // timestamp
+    int api_data[4];     // for API usage
 };
 
-struct TradeResult {
-    int routing;       // 0=A-book, 1=B-book
-    int retcode;       // 0=success
-    char reason[128];
+struct MT4UserRecord {
+    int login;           // login
+    char group[16];      // group
+    char password[16];   // password
+    int enable;          // enable
+    int enable_change_password; // allow to change password
+    int enable_read_only; // allow to open/close orders
+    char name[128];      // name
+    char country[32];    // country
+    char city[32];       // city
+    char state[32];      // state
+    char zipcode[16];    // zipcode
+    char address[128];   // address
+    char phone[32];      // phone
+    char email[64];      // email
+    char comment[64];    // comment
+    char id[32];         // SSN
+    char status[16];     // status
+    __time32_t regdate; // registration date
+    __time32_t lastdate; // last visit date
+    int leverage;        // leverage
+    int agent_account;   // agent account
+    __time32_t timestamp; // timestamp
+    double balance;      // balance
+    double prevmonthbalance; // previous month balance
+    double prevbalance;  // previous balance
+    double credit;       // credit
+    double interestrate; // accumulated interest rate
+    double taxes;        // taxes
+    double prevmonthequity; // previous month equity
+    double prevequity;   // previous equity
+    int reserved2[2];    // reserved fields
+    char publickey[270]; // rsa public key
+    int reserved[7];     // reserved fields
 };
-
-// Return codes
-#define MT_RET_OK           0
-#define MT_RET_ERROR        1
-
-// Routing decisions
-#define ROUTE_A_BOOK        0
-#define ROUTE_B_BOOK        1
 
 // Plugin configuration
 struct PluginConfig {
@@ -135,6 +179,10 @@ struct PluginConfig {
     int cache_ttl;
     int max_cache_size;
 };
+
+// Global configuration
+PluginConfig g_config;
+std::mutex g_config_mutex;
 
 // Simplified scoring request
 struct ScoringRequest {
@@ -169,12 +217,13 @@ public:
         std::lock_guard<std::mutex> lock(cache_mutex);
         auto it = cache.find(key);
         if (it != cache.end()) {
-            auto age = std::chrono::steady_clock::now() - it->second.timestamp;
-            if (age < ttl) {
+            auto now = std::chrono::steady_clock::now();
+            if (now - it->second.timestamp < ttl) {
                 score = it->second.score;
                 return true;
+            } else {
+                cache.erase(it);
             }
-            cache.erase(it); // Remove expired entry
         }
         return false;
     }
@@ -183,12 +232,12 @@ public:
         std::lock_guard<std::mutex> lock(cache_mutex);
         cache[key] = {score, std::chrono::steady_clock::now()};
         
-        // Cleanup old entries if cache gets too large
+        // Cleanup expired entries periodically
         if (cache.size() > 1000) {
             auto now = std::chrono::steady_clock::now();
             auto it = cache.begin();
             while (it != cache.end()) {
-                if (now - it->second.timestamp > ttl) {
+                if (now - it->second.timestamp >= ttl) {
                     it = cache.erase(it);
                 } else {
                     ++it;
@@ -198,25 +247,23 @@ public:
     }
     
     void SetTTL(int milliseconds) {
+        std::lock_guard<std::mutex> lock(cache_mutex);
         ttl = std::chrono::milliseconds(milliseconds);
     }
 };
 
-// Global variables
-static PluginConfig g_config;
-static std::mutex g_config_mutex;
-static ScoreCache g_score_cache;
+// Global cache instance
+ScoreCache g_score_cache;
 
-// Generate cache key from scoring request
+// Generate hash for caching
 std::string GenerateRequestHash(const ScoringRequest& req) {
-    std::stringstream ss;
-    ss << req.user_id << "|" << req.symbol << "|" << req.lot_volume 
-       << "|" << static_cast<int>(req.open_price * 100000) // Price to 5 decimals
-       << "|" << req.deal_type << "|" << static_cast<int>(req.opening_balance);
-    return ss.str();
+    std::string hash = std::string(req.user_id) + "_" + 
+                      std::string(req.symbol) + "_" + 
+                      std::to_string(req.open_price) + "_" + 
+                      std::to_string(req.lot_volume);
+    return hash;
 }
 
-// Simple CVM communication
 class CVMClient {
 private:
     SOCKET sock;
@@ -232,15 +279,29 @@ public:
     }
     
     float GetScore(const ScoringRequest& request) {
+        g_logger.LogInfo("CVMClient::GetScore() called");
+        
+        // Check cache first
+        if (g_config.enable_cache) {
+            std::string cache_key = GenerateRequestHash(request);
+            float cached_score;
+            if (g_score_cache.GetCachedScore(cache_key, cached_score)) {
+                g_logger.LogInfo("Using cached score: " + std::to_string(cached_score));
+                return cached_score;
+            }
+        }
+        
         // Create socket
         sock = socket(AF_INET, SOCK_STREAM, 0);
         if (sock == INVALID_SOCKET) {
+            g_logger.LogSocketError("Socket creation");
             return (float)g_config.fallback_score;
         }
         
         // Set timeout
         DWORD timeout = g_config.connection_timeout;
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
         
         // Connect to CVM
         sockaddr_in addr;
@@ -249,6 +310,7 @@ public:
         inet_pton(AF_INET, g_config.cvm_ip, &addr.sin_addr);
         
         if (connect(sock, (sockaddr*)&addr, sizeof(addr)) != 0) {
+            g_logger.LogSocketError("Connection to CVM");
             closesocket(sock);
             return (float)g_config.fallback_score;
         }
@@ -269,19 +331,38 @@ public:
         json += "\"inst_group\":\"" + std::string(request.inst_group) + "\"";
         json += "}";
         
-        // Send length-prefixed message
-        uint32_t length = (uint32_t)json.length();
-        send(sock, (char*)&length, sizeof(length), 0);
-        send(sock, json.c_str(), (int)json.length(), 0);
+        g_logger.LogInfo("Sending request to CVM: " + json);
         
-        // Receive response
-        uint32_t response_length;
-        if (recv(sock, (char*)&response_length, sizeof(response_length), 0) <= 0) {
+        // Send length-prefixed message
+        uint32_t length = json.length();
+        if (send(sock, (char*)&length, sizeof(length), 0) != sizeof(length)) {
+            g_logger.LogSocketError("Send length");
             closesocket(sock);
             return (float)g_config.fallback_score;
         }
         
-        if (recv(sock, buffer, response_length, 0) <= 0) {
+        if (send(sock, json.c_str(), length, 0) != (int)length) {
+            g_logger.LogSocketError("Send data");
+            closesocket(sock);
+            return (float)g_config.fallback_score;
+        }
+        
+        // Receive response
+        uint32_t response_length;
+        if (recv(sock, (char*)&response_length, sizeof(response_length), 0) != sizeof(response_length)) {
+            g_logger.LogSocketError("Receive length");
+            closesocket(sock);
+            return (float)g_config.fallback_score;
+        }
+        
+        if (response_length > sizeof(buffer) - 1) {
+            g_logger.LogError("Response too large: " + std::to_string(response_length));
+            closesocket(sock);
+            return (float)g_config.fallback_score;
+        }
+        
+        if (recv(sock, buffer, response_length, 0) != (int)response_length) {
+            g_logger.LogSocketError("Receive data");
             closesocket(sock);
             return (float)g_config.fallback_score;
         }
@@ -289,405 +370,225 @@ public:
         buffer[response_length] = '\0';
         closesocket(sock);
         
-        // Parse JSON response (simplified)
-        const char* score_start = strstr(buffer, "\"score\":");
-        if (score_start) {
-            return (float)atof(score_start + 8);
+        // Parse response (simplified JSON parsing)
+        std::string response(buffer);
+        g_logger.LogInfo("Received response: " + response);
+        
+        // Extract score from JSON response
+        size_t score_pos = response.find("\"score\":");
+        if (score_pos != std::string::npos) {
+            size_t start = response.find(":", score_pos) + 1;
+            size_t end = response.find(",", start);
+            if (end == std::string::npos) end = response.find("}", start);
+            
+            if (start != std::string::npos && end != std::string::npos) {
+                std::string score_str = response.substr(start, end - start);
+                float score = std::stof(score_str);
+                
+                // Cache the score
+                if (g_config.enable_cache) {
+                    std::string cache_key = GenerateRequestHash(request);
+                    g_score_cache.SetCachedScore(cache_key, score);
+                }
+                
+                g_logger.LogInfo("Parsed score: " + std::to_string(score));
+                return score;
+            }
         }
         
+        g_logger.LogError("Failed to parse score from response");
         return (float)g_config.fallback_score;
     }
 };
 
-// Configuration management
+// Configuration loading
 bool LoadConfiguration() {
-    g_logger.LogInfo("Starting configuration loading...");
+    g_logger.LogInfo("Loading configuration from ABBook_Config.ini");
     
-    try {
-        // Set defaults
-        g_logger.LogInfo("Setting default configuration values...");
-        strcpy_s(g_config.cvm_ip, "127.0.0.1");
-        g_config.cvm_port = 8080;
-        g_config.connection_timeout = 5000;
-        g_config.fallback_score = 0.0;
-        g_config.force_a_book = false;
-        g_config.force_b_book = false;
-        g_config.enable_cache = true;
-        g_config.cache_ttl = 300;
-        g_config.max_cache_size = 1000;
-        
-        // Default thresholds
-        g_config.thresholds[0] = 0.08; // FXMajors
-        g_config.thresholds[1] = 0.12; // Crypto
-        g_config.thresholds[2] = 0.06; // Metals
-        g_config.thresholds[3] = 0.10; // Energy
-        g_config.thresholds[4] = 0.07; // Indices
-        g_config.thresholds[5] = 0.05; // Other
-        
-        g_logger.LogInfo("Default configuration values set successfully");
-        
-        std::ifstream config_file("ABBook_Config.ini");
-        if (!config_file.is_open()) {
-            g_logger.LogWarning("Configuration file ABBook_Config.ini not found, using defaults");
-            return true; // Use defaults
-        }
-        
-        g_logger.LogInfo("Configuration file opened successfully");
-        
-        std::string line;
-        int line_count = 0;
-        while (std::getline(config_file, line)) {
-            line_count++;
-            
-            // Skip empty lines and comments
-            if (line.empty() || line[0] == '#' || line[0] == ';' || line[0] == '[') {
-                continue;
-            }
-            
-            g_logger.LogDebug("Processing config line " + std::to_string(line_count) + ": " + line);
-            
-            try {
-                if (line.find("CVM_IP=") == 0) {
-                    std::string ip = line.substr(7);
-                    strcpy_s(g_config.cvm_ip, ip.c_str());
-                    g_logger.LogInfo("CVM_IP set to: " + ip);
-                } else if (line.find("CVM_Port=") == 0) {
-                    g_config.cvm_port = std::stoi(line.substr(9));
-                    g_logger.LogInfo("CVM_Port set to: " + std::to_string(g_config.cvm_port));
-                } else if (line.find("ConnectionTimeout=") == 0) {
-                    g_config.connection_timeout = std::stoi(line.substr(18));
-                    g_logger.LogInfo("ConnectionTimeout set to: " + std::to_string(g_config.connection_timeout));
-                } else if (line.find("FallbackScore=") == 0) {
-                    g_config.fallback_score = std::stod(line.substr(14));
-                    g_logger.LogInfo("FallbackScore set to: " + std::to_string(g_config.fallback_score));
-                } else if (line.find("EnableCache=") == 0) {
-                    g_config.enable_cache = (line.substr(12) == "true");
-                    g_logger.LogInfo("EnableCache set to: " + std::string(g_config.enable_cache ? "true" : "false"));
-                } else if (line.find("CacheTTL=") == 0) {
-                    g_config.cache_ttl = std::stoi(line.substr(9));
-                    g_logger.LogInfo("CacheTTL set to: " + std::to_string(g_config.cache_ttl));
-                } else if (line.find("ForceABook=") == 0) {
-                    g_config.force_a_book = (line.substr(11) == "true");
-                    g_logger.LogInfo("ForceABook set to: " + std::string(g_config.force_a_book ? "true" : "false"));
-                } else if (line.find("ForceBBook=") == 0) {
-                    g_config.force_b_book = (line.substr(11) == "true");
-                    g_logger.LogInfo("ForceBBook set to: " + std::string(g_config.force_b_book ? "true" : "false"));
-                } else if (line.find("Threshold_FXMajors=") == 0) {
-                    g_config.thresholds[0] = std::stod(line.substr(19));
-                    g_logger.LogInfo("Threshold_FXMajors set to: " + std::to_string(g_config.thresholds[0]));
-                } else if (line.find("Threshold_Crypto=") == 0) {
-                    g_config.thresholds[1] = std::stod(line.substr(17));
-                    g_logger.LogInfo("Threshold_Crypto set to: " + std::to_string(g_config.thresholds[1]));
-                } else if (line.find("Threshold_Metals=") == 0) {
-                    g_config.thresholds[2] = std::stod(line.substr(17));
-                    g_logger.LogInfo("Threshold_Metals set to: " + std::to_string(g_config.thresholds[2]));
-                } else if (line.find("Threshold_Energy=") == 0) {
-                    g_config.thresholds[3] = std::stod(line.substr(17));
-                    g_logger.LogInfo("Threshold_Energy set to: " + std::to_string(g_config.thresholds[3]));
-                } else if (line.find("Threshold_Indices=") == 0) {
-                    g_config.thresholds[4] = std::stod(line.substr(18));
-                    g_logger.LogInfo("Threshold_Indices set to: " + std::to_string(g_config.thresholds[4]));
-                } else if (line.find("Threshold_Other=") == 0) {
-                    g_config.thresholds[5] = std::stod(line.substr(16));
-                    g_logger.LogInfo("Threshold_Other set to: " + std::to_string(g_config.thresholds[5]));
-                } else {
-                    g_logger.LogWarning("Unknown configuration line: " + line);
-                }
-            } catch (const std::exception& e) {
-                g_logger.LogError("Error parsing config line " + std::to_string(line_count) + ": " + e.what());
-            }
-        }
-        
-        g_logger.LogInfo("Configuration file parsed successfully, processed " + std::to_string(line_count) + " lines");
-        
-        // Configure cache with loaded settings
-        g_score_cache.SetTTL(g_config.cache_ttl);
-        g_logger.LogInfo("Cache configured with TTL: " + std::to_string(g_config.cache_ttl));
-        
-        // Log final configuration
-        g_logger.LogInfo("Final configuration:");
-        g_logger.LogInfo("  CVM_IP: " + std::string(g_config.cvm_ip));
-        g_logger.LogInfo("  CVM_Port: " + std::to_string(g_config.cvm_port));
-        g_logger.LogInfo("  Connection Timeout: " + std::to_string(g_config.connection_timeout));
-        g_logger.LogInfo("  Fallback Score: " + std::to_string(g_config.fallback_score));
-        g_logger.LogInfo("  Force A-Book: " + std::string(g_config.force_a_book ? "true" : "false"));
-        g_logger.LogInfo("  Force B-Book: " + std::string(g_config.force_b_book ? "true" : "false"));
-        g_logger.LogInfo("  Cache Enabled: " + std::string(g_config.enable_cache ? "true" : "false"));
-        
-        g_logger.LogInfo("Configuration loading completed successfully");
-        return true;
-        
-    } catch (const std::exception& e) {
-        g_logger.LogError("Exception in LoadConfiguration: " + std::string(e.what()));
-        return false;
-    } catch (...) {
-        g_logger.LogError("Unknown exception in LoadConfiguration");
+    std::lock_guard<std::mutex> lock(g_config_mutex);
+    
+    // Default values
+    strcpy_s(g_config.cvm_ip, "127.0.0.1");
+    g_config.cvm_port = 8080;
+    g_config.connection_timeout = 5000;
+    g_config.fallback_score = 0.05;
+    g_config.force_a_book = false;
+    g_config.force_b_book = false;
+    g_config.enable_cache = true;
+    g_config.cache_ttl = 300;
+    g_config.max_cache_size = 1000;
+    
+    // Default thresholds
+    g_config.thresholds[0] = 0.08; // FXMajors
+    g_config.thresholds[1] = 0.12; // Crypto
+    g_config.thresholds[2] = 0.06; // Metals
+    g_config.thresholds[3] = 0.10; // Energy
+    g_config.thresholds[4] = 0.07; // Indices
+    g_config.thresholds[5] = 0.05; // Other
+    
+    std::ifstream config_file("ABBook_Config.ini");
+    if (!config_file.is_open()) {
+        g_logger.LogError("Could not open ABBook_Config.ini");
         return false;
     }
-}
-
-// Utility functions
-const char* GetInstrumentGroup(const char* symbol) {
-    if (strstr(symbol, "EUR") || strstr(symbol, "GBP") || strstr(symbol, "USD") || 
-        strstr(symbol, "JPY") || strstr(symbol, "CHF") || strstr(symbol, "AUD")) {
-        return "FXMajors";
-    } else if (strstr(symbol, "BTC") || strstr(symbol, "ETH") || strstr(symbol, "LTC")) {
-        return "Crypto";
-    } else if (strstr(symbol, "GOLD") || strstr(symbol, "XAU") || strstr(symbol, "SILVER")) {
-        return "Metals";
-    } else if (strstr(symbol, "OIL") || strstr(symbol, "WTI") || strstr(symbol, "BRENT")) {
-        return "Energy";
-    } else if (strstr(symbol, "SPX") || strstr(symbol, "NDX") || strstr(symbol, "DAX")) {
-        return "Indices";
+    
+    std::string line;
+    int line_number = 0;
+    
+    while (std::getline(config_file, line)) {
+        line_number++;
+        g_logger.LogInfo("Processing line " + std::to_string(line_number) + ": " + line);
+        
+        // Skip empty lines and comments
+        if (line.empty() || line[0] == '#' || line[0] == ';' || line[0] == '[') {
+            continue;
+        }
+        
+        // Parse key=value pairs
+        size_t equals_pos = line.find('=');
+        if (equals_pos == std::string::npos) {
+            continue;
+        }
+        
+        std::string key = line.substr(0, equals_pos);
+        std::string value = line.substr(equals_pos + 1);
+        
+        // Trim whitespace
+        key.erase(0, key.find_first_not_of(" \t"));
+        key.erase(key.find_last_not_of(" \t") + 1);
+        value.erase(0, value.find_first_not_of(" \t"));
+        value.erase(value.find_last_not_of(" \t") + 1);
+        
+        g_logger.LogInfo("Config: " + key + " = " + value);
+        
+        // Process configuration values
+        if (key == "CVM_IP") {
+            strcpy_s(g_config.cvm_ip, value.c_str());
+        } else if (key == "CVM_Port") {
+            g_config.cvm_port = std::stoi(value);
+        } else if (key == "ConnectionTimeout") {
+            g_config.connection_timeout = std::stoi(value);
+        } else if (key == "FallbackScore") {
+            g_config.fallback_score = std::stod(value);
+        } else if (key == "ForceABook") {
+            g_config.force_a_book = (value == "true" || value == "1");
+        } else if (key == "ForceBBook") {
+            g_config.force_b_book = (value == "true" || value == "1");
+        } else if (key == "EnableCache") {
+            g_config.enable_cache = (value == "true" || value == "1");
+        } else if (key == "CacheTTL") {
+            g_config.cache_ttl = std::stoi(value);
+            g_score_cache.SetTTL(g_config.cache_ttl);
+        } else if (key == "MaxCacheSize") {
+            g_config.max_cache_size = std::stoi(value);
+        } else if (key == "Threshold_FXMajors") {
+            g_config.thresholds[0] = std::stod(value);
+        } else if (key == "Threshold_Crypto") {
+            g_config.thresholds[1] = std::stod(value);
+        } else if (key == "Threshold_Metals") {
+            g_config.thresholds[2] = std::stod(value);
+        } else if (key == "Threshold_Energy") {
+            g_config.thresholds[3] = std::stod(value);
+        } else if (key == "Threshold_Indices") {
+            g_config.thresholds[4] = std::stod(value);
+        } else if (key == "Threshold_Other") {
+            g_config.thresholds[5] = std::stod(value);
+        }
     }
-    return "Other";
+    
+    config_file.close();
+    
+    g_logger.LogInfo("Configuration loaded successfully");
+    g_logger.LogInfo("CVM_IP: " + std::string(g_config.cvm_ip));
+    g_logger.LogInfo("CVM_Port: " + std::to_string(g_config.cvm_port));
+    g_logger.LogInfo("ConnectionTimeout: " + std::to_string(g_config.connection_timeout));
+    g_logger.LogInfo("FallbackScore: " + std::to_string(g_config.fallback_score));
+    g_logger.LogInfo("EnableCache: " + std::string(g_config.enable_cache ? "true" : "false"));
+    
+    return true;
 }
 
 double GetThresholdForGroup(const char* group) {
-    if (strcmp(group, "FXMajors") == 0) return g_config.thresholds[0];
-    if (strcmp(group, "Crypto") == 0) return g_config.thresholds[1];
-    if (strcmp(group, "Metals") == 0) return g_config.thresholds[2];
-    if (strcmp(group, "Energy") == 0) return g_config.thresholds[3];
-    if (strcmp(group, "Indices") == 0) return g_config.thresholds[4];
-    return g_config.thresholds[5]; // Other
+    if (strstr(group, "FXMajors") || strstr(group, "EURUSD") || strstr(group, "GBPUSD")) {
+        return g_config.thresholds[0];
+    } else if (strstr(group, "Crypto") || strstr(group, "BTC") || strstr(group, "ETH")) {
+        return g_config.thresholds[1];
+    } else if (strstr(group, "Metals") || strstr(group, "Gold") || strstr(group, "Silver")) {
+        return g_config.thresholds[2];
+    } else if (strstr(group, "Energy") || strstr(group, "Oil") || strstr(group, "WTI")) {
+        return g_config.thresholds[3];
+    } else if (strstr(group, "Indices") || strstr(group, "SPX") || strstr(group, "NDX")) {
+        return g_config.thresholds[4];
+    } else {
+        return g_config.thresholds[5]; // Other
+    }
 }
 
-void BuildScoringRequest(const TradeRequest* trade, ScoringRequest* request) {
-    // Basic trade data
+void BuildScoringRequest(const MT4TradeRecord* trade, const MT4UserRecord* user, ScoringRequest* request) {
+    g_logger.LogInfo("Building scoring request for trade");
+    
+    // User ID
     sprintf_s(request->user_id, "%d", trade->login);
-    request->open_price = (float)trade->price;
+    
+    // Trade data
+    request->open_price = (float)trade->open_price;
     request->sl = (float)trade->sl;
     request->tp = (float)trade->tp;
-    request->deal_type = (float)trade->type;
-    request->lot_volume = (float)trade->volume;
-    strcpy_s(request->symbol, trade->symbol);
-    strcpy_s(request->inst_group, GetInstrumentGroup(trade->symbol));
+    request->deal_type = (float)trade->cmd;
+    request->lot_volume = (float)trade->volume / 100.0f; // Convert to lots
     
-    // Calculated fields
+    // User data
+    request->opening_balance = (float)user->balance;
+    request->concurrent_positions = 1; // Simplified
     request->has_sl = (trade->sl > 0) ? 1.0f : 0.0f;
     request->has_tp = (trade->tp > 0) ? 1.0f : 0.0f;
     
-    // Account data (would come from MT server API)
-    request->opening_balance = 10000.0f;    // Placeholder
-    request->concurrent_positions = 3.0f;   // Placeholder
+    // Symbol and group
+    strcpy_s(request->symbol, trade->symbol);
+    strcpy_s(request->inst_group, user->group);
+    
+    g_logger.LogInfo("Scoring request built successfully");
 }
 
-void LogDecision(const TradeRequest* trade, float score, double threshold, int routing) {
+void LogDecision(const MT4TradeRecord* trade, float score, double threshold, const char* routing) {
+    g_logger.LogInfo("=== ROUTING DECISION ===");
+    g_logger.LogInfo("Login: " + std::to_string(trade->login));
+    g_logger.LogInfo("Symbol: " + std::string(trade->symbol));
+    g_logger.LogInfo("Volume: " + std::to_string(trade->volume));
+    g_logger.LogInfo("Price: " + std::to_string(trade->open_price));
+    g_logger.LogInfo("Score: " + std::to_string(score));
+    g_logger.LogInfo("Threshold: " + std::to_string(threshold));
+    g_logger.LogInfo("Routing: " + std::string(routing));
+    g_logger.LogInfo("========================");
+    
+    // Also log to the original log file for compatibility
     std::ofstream log_file("ABBook_Plugin.log", std::ios::app);
     if (log_file.is_open()) {
         auto now = std::time(nullptr);
         char timestamp[32];
         std::strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
         
-        log_file << timestamp << " - ";
-        log_file << "Login:" << trade->login << " ";
-        log_file << "Symbol:" << trade->symbol << " ";
-        log_file << "Score:" << score << " ";
-        log_file << "Threshold:" << threshold << " ";
-        log_file << "Decision:" << (routing == 0 ? "A-BOOK" : "B-BOOK") << std::endl;
-        
+        log_file << timestamp << " - Login:" << trade->login << " Symbol:" << trade->symbol 
+                << " Score:" << score << " Threshold:" << threshold << " Decision:" << routing << std::endl;
         log_file.close();
     }
 }
 
-// Main trade processing function
-int ProcessTradeRouting(const TradeRequest* trade, TradeResult* result) {
-    try {
-        // Check global overrides
-        if (g_config.force_a_book) {
-            result->routing = ROUTE_A_BOOK;
-            result->retcode = MT_RET_OK;
-            strcpy_s(result->reason, "FORCED_A_BOOK");
-            LogDecision(trade, 0.0f, 0.0, 0);
-            return MT_RET_OK;
-        }
-        
-        if (g_config.force_b_book) {
-            result->routing = ROUTE_B_BOOK;
-            result->retcode = MT_RET_OK;
-            strcpy_s(result->reason, "FORCED_B_BOOK");
-            LogDecision(trade, 1.0f, 0.0, 1);
-            return MT_RET_OK;
-        }
-        
-        // Build scoring request
-        ScoringRequest scoring_req;
-        BuildScoringRequest(trade, &scoring_req);
-        
-        // Try to get cached score first (if caching is enabled)
-        float score = (float)g_config.fallback_score;
-        
-        if (g_config.enable_cache) {
-            std::string cache_key = GenerateRequestHash(scoring_req);
-            if (!g_score_cache.GetCachedScore(cache_key, score)) {
-                // Cache miss - get score from CVM
-                CVMClient cvm_client;
-                score = cvm_client.GetScore(scoring_req);
-                
-                // Cache the result for future requests
-                g_score_cache.SetCachedScore(cache_key, score);
-            }
-        } else {
-            // Caching disabled - get score directly
-            CVMClient cvm_client;
-            score = cvm_client.GetScore(scoring_req);
-        }
-        
-        // Get threshold
-        const char* inst_group = GetInstrumentGroup(trade->symbol);
-        double threshold = GetThresholdForGroup(inst_group);
-        
-        // Make routing decision
-        if (score >= threshold) {
-            result->routing = ROUTE_B_BOOK;
-            strcpy_s(result->reason, "SCORE_ABOVE_THRESHOLD");
-        } else {
-            result->routing = ROUTE_A_BOOK;
-            strcpy_s(result->reason, "SCORE_BELOW_THRESHOLD");
-        }
-        
-        result->retcode = MT_RET_OK;
-        
-        // Log decision
-        LogDecision(trade, score, threshold, result->routing);
-        
-        return MT_RET_OK;
-        
-    } catch (...) {
-        result->routing = ROUTE_A_BOOK; // Default to A-book on error
-        result->retcode = MT_RET_ERROR;
-        strcpy_s(result->reason, "ERROR_FALLBACK");
-        return MT_RET_ERROR;
-    }
-}
-
-// Plugin API exports
+// MT4-Compatible Plugin Interface
+// Based on common MT4 plugin patterns
 extern "C" {
-    __declspec(dllexport) int __stdcall OnTradeRequest(TradeRequest* request, TradeResult* result, void* server_context) {
-        g_logger.LogInfo("=== OnTradeRequest() called ===");
-        
-        try {
-            // Validate input parameters
-            if (!request) {
-                g_logger.LogError("OnTradeRequest: request parameter is NULL");
-                return MT_RET_ERROR;
-            }
-            
-            if (!result) {
-                g_logger.LogError("OnTradeRequest: result parameter is NULL");
-                return MT_RET_ERROR;
-            }
-            
-            // Log trade request details
-            g_logger.LogInfo("Trade request details:");
-            g_logger.LogInfo("  Login: " + std::to_string(request->login));
-            g_logger.LogInfo("  Symbol: " + std::string(request->symbol));
-            g_logger.LogInfo("  Type: " + std::string(request->type == 0 ? "BUY" : "SELL"));
-            g_logger.LogInfo("  Volume: " + std::to_string(request->volume));
-            g_logger.LogInfo("  Price: " + std::to_string(request->price));
-            g_logger.LogInfo("  SL: " + std::to_string(request->sl));
-            g_logger.LogInfo("  TP: " + std::to_string(request->tp));
-            g_logger.LogInfo("  Comment: " + std::string(request->comment));
-            
-            // Log server context
-            g_logger.LogInfo("Server context: " + std::to_string(reinterpret_cast<uintptr_t>(server_context)));
-            
-            // Process the trade
-            int routing_result = ProcessTradeRouting(request, result);
-            
-            // Log result
-            g_logger.LogInfo("Trade routing result:");
-            g_logger.LogInfo("  Routing: " + std::string(result->routing == ROUTE_A_BOOK ? "A-BOOK" : "B-BOOK"));
-            g_logger.LogInfo("  Return code: " + std::to_string(result->retcode));
-            g_logger.LogInfo("  Reason: " + std::string(result->reason));
-            
-            g_logger.LogInfo("OnTradeRequest completed with result: " + std::to_string(routing_result));
-            return routing_result;
-            
-        } catch (const std::exception& e) {
-            g_logger.LogError("Exception in OnTradeRequest: " + std::string(e.what()));
-            if (result) {
-                result->routing = ROUTE_A_BOOK;
-                result->retcode = MT_RET_ERROR;
-                strcpy_s(result->reason, "EXCEPTION_ERROR");
-            }
-            return MT_RET_ERROR;
-        } catch (...) {
-            g_logger.LogError("Unknown exception in OnTradeRequest");
-            if (result) {
-                result->routing = ROUTE_A_BOOK;
-                result->retcode = MT_RET_ERROR;
-                strcpy_s(result->reason, "UNKNOWN_ERROR");
-            }
-            return MT_RET_ERROR;
-        }
-    }
-    
-    // Trade close handler
-    __declspec(dllexport) int __stdcall OnTradeClose(int login, int ticket, double volume, double price) {
-        g_logger.LogInfo("=== OnTradeClose() called ===");
-        
-        try {
-            // Log trade close details
-            g_logger.LogInfo("Trade close details:");
-            g_logger.LogInfo("  Login: " + std::to_string(login));
-            g_logger.LogInfo("  Ticket: " + std::to_string(ticket));
-            g_logger.LogInfo("  Volume: " + std::to_string(volume));
-            g_logger.LogInfo("  Price: " + std::to_string(price));
-            
-            // Also log to the original log file for compatibility
-            std::ofstream log_file("ABBook_Plugin.log", std::ios::app);
-            if (log_file.is_open()) {
-                auto now = std::time(nullptr);
-                char timestamp[32];
-                std::strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
-                
-                log_file << timestamp << " - CLOSE: Login:" << login << " Ticket:" << ticket << std::endl;
-                log_file.close();
-                g_logger.LogInfo("Trade close logged to ABBook_Plugin.log");
-            } else {
-                g_logger.LogError("Failed to write to ABBook_Plugin.log");
-            }
-            
-            g_logger.LogInfo("OnTradeClose completed successfully");
-            return MT_RET_OK;
-            
-        } catch (const std::exception& e) {
-            g_logger.LogError("Exception in OnTradeClose: " + std::string(e.what()));
-            return MT_RET_ERROR;
-        } catch (...) {
-            g_logger.LogError("Unknown exception in OnTradeClose");
-            return MT_RET_ERROR;
-        }
-    }
-    
-    // Configuration reload
-    __declspec(dllexport) void __stdcall OnConfigUpdate() {
-        g_logger.LogInfo("=== OnConfigUpdate() called ===");
-        
-        try {
-            std::lock_guard<std::mutex> lock(g_config_mutex);
-            g_logger.LogInfo("Configuration mutex acquired");
-            
-            g_logger.LogInfo("Reloading configuration...");
-            if (LoadConfiguration()) {
-                g_logger.LogInfo("Configuration reloaded successfully");
-            } else {
-                g_logger.LogError("Configuration reload failed");
-            }
-            
-            g_logger.LogInfo("OnConfigUpdate completed");
-            
-        } catch (const std::exception& e) {
-            g_logger.LogError("Exception in OnConfigUpdate: " + std::string(e.what()));
-        } catch (...) {
-            g_logger.LogError("Unknown exception in OnConfigUpdate");
-        }
-    }
+    // Plugin info structure
+    struct PluginInfo {
+        int version;
+        char name[64];
+        char copyright[128];
+        char web[128];
+        char email[64];
+    };
     
     // Plugin initialization
-    __declspec(dllexport) int __stdcall PluginInit() {
-        g_logger.LogInfo("=== PluginInit() called ===");
+    __declspec(dllexport) int __stdcall MtSrvStartup(void* server_interface) {
+        g_logger.LogInfo("=== MtSrvStartup() called ===");
         
         try {
             // Initialize Winsock
@@ -712,32 +613,6 @@ extern "C" {
             }
             
             g_logger.LogInfo("Configuration loaded successfully");
-            
-            // Test basic functionality
-            g_logger.LogInfo("Testing basic plugin functionality...");
-            
-            // Test file writing permissions
-            std::ofstream test_file("ABBook_Plugin.log", std::ios::app);
-            if (test_file.is_open()) {
-                auto now = std::time(nullptr);
-                char timestamp[32];
-                std::strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", std::localtime(&now));
-                test_file << timestamp << " - Plugin initialized with enhanced logging" << std::endl;
-                test_file.close();
-                g_logger.LogInfo("Log file write test successful");
-            } else {
-                g_logger.LogError("Failed to write to log file");
-            }
-            
-            // Test socket creation
-            g_logger.LogInfo("Testing socket creation...");
-            SOCKET test_sock = socket(AF_INET, SOCK_STREAM, 0);
-            if (test_sock == INVALID_SOCKET) {
-                g_logger.LogSocketError("Test socket creation");
-            } else {
-                g_logger.LogInfo("Socket creation test successful");
-                closesocket(test_sock);
-            }
             
             // Log system information
             g_logger.LogInfo("System information:");
@@ -767,22 +642,22 @@ extern "C" {
             }
             
             g_logger.LogInfo("Plugin initialization completed successfully");
-            g_logger.LogInfo("=== PluginInit() completed with success ===");
+            g_logger.LogInfo("=== MtSrvStartup() completed with success ===");
             
             return 0; // Success
             
         } catch (const std::exception& e) {
-            g_logger.LogError("Exception in PluginInit: " + std::string(e.what()));
+            g_logger.LogError("Exception in MtSrvStartup: " + std::string(e.what()));
             return 1;
         } catch (...) {
-            g_logger.LogError("Unknown exception in PluginInit");
+            g_logger.LogError("Unknown exception in MtSrvStartup");
             return 1;
         }
     }
     
     // Plugin cleanup
-    __declspec(dllexport) void __stdcall PluginCleanup() {
-        g_logger.LogInfo("=== PluginCleanup() called ===");
+    __declspec(dllexport) void __stdcall MtSrvCleanup() {
+        g_logger.LogInfo("=== MtSrvCleanup() called ===");
         
         try {
             g_logger.LogInfo("Cleaning up Winsock...");
@@ -792,9 +667,107 @@ extern "C" {
             g_logger.LogInfo("Plugin cleanup completed successfully");
             
         } catch (const std::exception& e) {
-            g_logger.LogError("Exception in PluginCleanup: " + std::string(e.what()));
+            g_logger.LogError("Exception in MtSrvCleanup: " + std::string(e.what()));
         } catch (...) {
-            g_logger.LogError("Unknown exception in PluginCleanup");
+            g_logger.LogError("Unknown exception in MtSrvCleanup");
+        }
+    }
+    
+    // Plugin information
+    __declspec(dllexport) PluginInfo* __stdcall MtSrvAbout() {
+        static PluginInfo info = {
+            100,                                    // version
+            "ABBook Router v1.0",                 // name
+            "Copyright 2024 ABBook Systems",      // copyright
+            "https://github.com/abbook/plugin",   // web
+            "support@abbook.com"                  // email
+        };
+        return &info;
+    }
+    
+    // Trade processing hook (if supported)
+    __declspec(dllexport) int __stdcall MtSrvTradeTransaction(MT4TradeRecord* trade, MT4UserRecord* user) {
+        g_logger.LogInfo("=== MtSrvTradeTransaction() called ===");
+        
+        try {
+            if (!trade || !user) {
+                g_logger.LogError("Invalid parameters: trade or user is NULL");
+                return 0; // Continue processing
+            }
+            
+            g_logger.LogInfo("Processing trade transaction:");
+            g_logger.LogInfo("  Order: " + std::to_string(trade->order));
+            g_logger.LogInfo("  Login: " + std::to_string(trade->login));
+            g_logger.LogInfo("  Symbol: " + std::string(trade->symbol));
+            g_logger.LogInfo("  Command: " + std::to_string(trade->cmd));
+            g_logger.LogInfo("  Volume: " + std::to_string(trade->volume));
+            g_logger.LogInfo("  Price: " + std::to_string(trade->open_price));
+            g_logger.LogInfo("  User Group: " + std::string(user->group));
+            g_logger.LogInfo("  User Balance: " + std::to_string(user->balance));
+            
+            // Check for override flags
+            if (g_config.force_a_book) {
+                g_logger.LogInfo("Force A-book enabled - routing to A-book");
+                LogDecision(trade, 0.0f, 0.0f, "A-BOOK (FORCED)");
+                return 0; // Continue processing
+            }
+            
+            if (g_config.force_b_book) {
+                g_logger.LogInfo("Force B-book enabled - routing to B-book");
+                LogDecision(trade, 1.0f, 0.0f, "B-BOOK (FORCED)");
+                return 0; // Continue processing
+            }
+            
+            // Build scoring request
+            ScoringRequest request;
+            BuildScoringRequest(trade, user, &request);
+            
+            // Get score from CVM
+            CVMClient cvm_client;
+            float score = cvm_client.GetScore(request);
+            
+            // Get threshold for this instrument group
+            double threshold = GetThresholdForGroup(user->group);
+            
+            // Make routing decision
+            if (score < threshold) {
+                LogDecision(trade, score, threshold, "A-BOOK");
+                // Route to A-book (external liquidity)
+                // NOTE: Actual routing implementation depends on broker's specific API
+            } else {
+                LogDecision(trade, score, threshold, "B-BOOK");
+                // Route to B-book (internal)
+                // NOTE: Actual routing implementation depends on broker's specific API
+            }
+            
+            g_logger.LogInfo("Trade transaction processed successfully");
+            return 0; // Continue processing
+            
+        } catch (const std::exception& e) {
+            g_logger.LogError("Exception in MtSrvTradeTransaction: " + std::string(e.what()));
+            return 0; // Continue processing
+        } catch (...) {
+            g_logger.LogError("Unknown exception in MtSrvTradeTransaction");
+            return 0; // Continue processing
+        }
+    }
+    
+    // Configuration update hook
+    __declspec(dllexport) void __stdcall MtSrvConfigUpdate() {
+        g_logger.LogInfo("=== MtSrvConfigUpdate() called ===");
+        
+        try {
+            g_logger.LogInfo("Reloading configuration...");
+            if (LoadConfiguration()) {
+                g_logger.LogInfo("Configuration reloaded successfully");
+            } else {
+                g_logger.LogError("Configuration reload failed");
+            }
+            
+        } catch (const std::exception& e) {
+            g_logger.LogError("Exception in MtSrvConfigUpdate: " + std::string(e.what()));
+        } catch (...) {
+            g_logger.LogError("Unknown exception in MtSrvConfigUpdate");
         }
     }
 }
