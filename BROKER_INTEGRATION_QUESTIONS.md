@@ -37,9 +37,9 @@
 - `vip` - VIP status: 1 = VIP, 0 = regular
 - `holding_time_sec` - Average duration of trades in the last 1–2h
 - `lot_usd_value` - USD value of one lot
-- `exposure_to_balance_ratio` - ratio = turnover_usd / opening_balance
-- `rapid_entry_exit` - Count of trades <60s in the last 1–2h
-- `abuse_risk_score` - Sum of has_sl and has_tp and not_empy rapid_entry_exit
+- `max_drawdown` - Maximum drawdown (negative value)
+- `max_runup` - Maximum runup (positive value)
+- `volume_24h` - Total trading volume (lots) in last 24h
 - `trader_tenure_days` - Days since account opened
 - `deposit_to_withdraw_ratio` - deposit_lifetime / max(1, withdraw_lifetime)
 - `education_known` - 1 if education provided, else 0
@@ -49,7 +49,18 @@
 - `withdrawal_density` - withdraw_count / max(1, days_since_reg)
 - `turnover_per_trade` - turnover_usd / max(1, num_closed_trades)
 
-#### **Profile & Metadata (37-51)**
+#### **Recent Performance Metrics (37-45) - CRITICAL FOR ML QUALITY**
+- `profitable_ratio_24h` - Profitability rate for last 24 hours
+- `profitable_ratio_48h` - Profitability rate for last 48 hours
+- `profitable_ratio_72h` - Profitability rate for last 72 hours
+- `trades_count_24h` - Number of trades closed in last 24 hours
+- `trades_count_48h` - Number of trades closed in last 48 hours
+- `trades_count_72h` - Number of trades closed in last 72 hours
+- `avg_profit_24h` - Average profit per trade in last 24 hours (USD)
+- `avg_profit_48h` - Average profit per trade in last 48 hours (USD)
+- `avg_profit_72h` - Average profit per trade in last 72 hours (USD)
+
+#### **Context & Metadata (46-60)**
 - `symbol` - Trading symbol (e.g., "EURUSD")
 - `inst_group` - Instrument group (e.g., "FXMajors")
 - `frequency` - Trading frequency (e.g., "medium")
@@ -65,6 +76,8 @@
 - `country_code` - Country code (e.g., "CY")
 - `utm_medium` - UTM medium (e.g., "cpc")
 - `user_id` - Client-provided ID for external service queries
+
+**⚠️ CRITICAL QUESTION**: "Can you provide historical trade data for the last 2-3 days to calculate these profitability metrics in real-time?"
 
 ### **2. Position Management**
 - **"How do we track opening vs closing positions?"**

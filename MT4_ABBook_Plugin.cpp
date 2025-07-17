@@ -242,6 +242,54 @@ struct ScoringRequest {
     float has_tp;
     char symbol[16];
     char inst_group[32];
+    float is_bonus;
+    float turnover_usd;
+    float sl_perc;
+    float tp_perc;
+    float profitable_ratio;
+    float num_open_trades;
+    float num_closed_trades;
+    float age;
+    float days_since_reg;
+    float deposit_lifetime;
+    float deposit_count;
+    float withdraw_lifetime;
+    float withdraw_count;
+    float vip;
+    float holding_time_sec;
+    float lot_usd_value;
+    float max_drawdown;
+    float max_runup;
+    float volume_24h;
+    float trader_tenure_days;
+    float deposit_to_withdraw_ratio;
+    float education_known;
+    float occupation_known;
+    float lot_to_balance_ratio;
+    float deposit_density;
+    float withdrawal_density;
+    float turnover_per_trade;
+    float profitable_ratio_24h;
+    float profitable_ratio_48h;
+    float profitable_ratio_72h;
+    float trades_count_24h;
+    float trades_count_48h;
+    float trades_count_72h;
+    float avg_profit_24h;
+    float avg_profit_48h;
+    float avg_profit_72h;
+    char frequency[32];
+    char trading_group[32];
+    char licence[32];
+    char platform[32];
+    char LEVEL_OF_EDUCATION[32];
+    char OCCUPATION[32];
+    char SOURCE_OF_WEALTH[32];
+    char ANNUAL_DISPOSABLE_INCOME[32];
+    char AVERAGE_FREQUENCY_OF_TRADES[32];
+    char EMPLOYMENT_STATUS[32];
+    char country_code[32];
+    char utm_medium[32];
 };
 
 // Score caching system for high-frequency trading
@@ -374,12 +422,64 @@ public:
         json += "\"tp\":" + std::to_string(request.tp) + ",";
         json += "\"deal_type\":" + std::to_string(request.deal_type) + ",";
         json += "\"lot_volume\":" + std::to_string(request.lot_volume) + ",";
+        json += "\"is_bonus\":" + std::to_string(request.is_bonus) + ",";
+        json += "\"turnover_usd\":" + std::to_string(request.turnover_usd) + ",";
         json += "\"opening_balance\":" + std::to_string(request.opening_balance) + ",";
         json += "\"concurrent_positions\":" + std::to_string(request.concurrent_positions) + ",";
+        json += "\"sl_perc\":" + std::to_string(request.sl_perc) + ",";
+        json += "\"tp_perc\":" + std::to_string(request.tp_perc) + ",";
         json += "\"has_sl\":" + std::to_string(request.has_sl) + ",";
         json += "\"has_tp\":" + std::to_string(request.has_tp) + ",";
+        json += "\"profitable_ratio\":" + std::to_string(request.profitable_ratio) + ",";
+        json += "\"num_open_trades\":" + std::to_string(request.num_open_trades) + ",";
+        json += "\"num_closed_trades\":" + std::to_string(request.num_closed_trades) + ",";
+        json += "\"age\":" + std::to_string(request.age) + ",";
+        json += "\"days_since_reg\":" + std::to_string(request.days_since_reg) + ",";
+        json += "\"deposit_lifetime\":" + std::to_string(request.deposit_lifetime) + ",";
+        json += "\"deposit_count\":" + std::to_string(request.deposit_count) + ",";
+        json += "\"withdraw_lifetime\":" + std::to_string(request.withdraw_lifetime) + ",";
+        json += "\"withdraw_count\":" + std::to_string(request.withdraw_count) + ",";
+        json += "\"vip\":" + std::to_string(request.vip) + ",";
+        json += "\"holding_time_sec\":" + std::to_string(request.holding_time_sec) + ",";
+        json += "\"lot_usd_value\":" + std::to_string(request.lot_usd_value) + ",";
+        json += "\"max_drawdown\":" + std::to_string(request.max_drawdown) + ",";
+        json += "\"max_runup\":" + std::to_string(request.max_runup) + ",";
+        json += "\"volume_24h\":" + std::to_string(request.volume_24h) + ",";
+        json += "\"trader_tenure_days\":" + std::to_string(request.trader_tenure_days) + ",";
+        json += "\"deposit_to_withdraw_ratio\":" + std::to_string(request.deposit_to_withdraw_ratio) + ",";
+        json += "\"education_known\":" + std::to_string(request.education_known) + ",";
+        json += "\"occupation_known\":" + std::to_string(request.occupation_known) + ",";
+        json += "\"lot_to_balance_ratio\":" + std::to_string(request.lot_to_balance_ratio) + ",";
+        json += "\"deposit_density\":" + std::to_string(request.deposit_density) + ",";
+        json += "\"withdrawal_density\":" + std::to_string(request.withdrawal_density) + ",";
+        json += "\"turnover_per_trade\":" + std::to_string(request.turnover_per_trade) + ",";
+        
+        // NEW: Recent Performance Metrics (37-45) - CRITICAL FOR ML QUALITY
+        json += "\"profitable_ratio_24h\":" + std::to_string(request.profitable_ratio_24h) + ",";
+        json += "\"profitable_ratio_48h\":" + std::to_string(request.profitable_ratio_48h) + ",";
+        json += "\"profitable_ratio_72h\":" + std::to_string(request.profitable_ratio_72h) + ",";
+        json += "\"trades_count_24h\":" + std::to_string(request.trades_count_24h) + ",";
+        json += "\"trades_count_48h\":" + std::to_string(request.trades_count_48h) + ",";
+        json += "\"trades_count_72h\":" + std::to_string(request.trades_count_72h) + ",";
+        json += "\"avg_profit_24h\":" + std::to_string(request.avg_profit_24h) + ",";
+        json += "\"avg_profit_48h\":" + std::to_string(request.avg_profit_48h) + ",";
+        json += "\"avg_profit_72h\":" + std::to_string(request.avg_profit_72h) + ",";
+        
+        // Context & Metadata (46-60)
         json += "\"symbol\":\"" + std::string(request.symbol) + "\",";
-        json += "\"inst_group\":\"" + std::string(request.inst_group) + "\"";
+        json += "\"inst_group\":\"" + std::string(request.inst_group) + "\",";
+        json += "\"frequency\":\"" + std::string(request.frequency) + "\",";
+        json += "\"trading_group\":\"" + std::string(request.trading_group) + "\",";
+        json += "\"licence\":\"" + std::string(request.licence) + "\",";
+        json += "\"platform\":\"" + std::string(request.platform) + "\",";
+        json += "\"LEVEL_OF_EDUCATION\":\"" + std::string(request.LEVEL_OF_EDUCATION) + "\",";
+        json += "\"OCCUPATION\":\"" + std::string(request.OCCUPATION) + "\",";
+        json += "\"SOURCE_OF_WEALTH\":\"" + std::string(request.SOURCE_OF_WEALTH) + "\",";
+        json += "\"ANNUAL_DISPOSABLE_INCOME\":\"" + std::string(request.ANNUAL_DISPOSABLE_INCOME) + "\",";
+        json += "\"AVERAGE_FREQUENCY_OF_TRADES\":\"" + std::string(request.AVERAGE_FREQUENCY_OF_TRADES) + "\",";
+        json += "\"EMPLOYMENT_STATUS\":\"" + std::string(request.EMPLOYMENT_STATUS) + "\",";
+        json += "\"country_code\":\"" + std::string(request.country_code) + "\",";
+        json += "\"utm_medium\":\"" + std::string(request.utm_medium) + "\"";
         json += "}";
         
         g_logger.LogInfo("Sending request to CVM: " + json);
@@ -581,24 +681,83 @@ void BuildScoringRequest(const MT4TradeRecord* trade, const MT4UserRecord* user,
     // User ID
     sprintf_s(request->user_id, "%d", trade->login);
     
-    // Trade data
+    // Core Trade Data (1-5)
     request->open_price = (float)trade->open_price;
     request->sl = (float)trade->sl;
     request->tp = (float)trade->tp;
     request->deal_type = (float)trade->cmd;
     request->lot_volume = (float)trade->volume / 100.0f; // Convert to lots
     
-    // User data
+    // Account & Trading History (6-36)
+    request->is_bonus = 0.0f; // TODO: Get from broker system
+    request->turnover_usd = request->open_price * request->lot_volume * 100000.0f; // Simplified
     request->opening_balance = (float)user->balance;
-    request->concurrent_positions = 1; // Simplified
+    request->concurrent_positions = 1; // TODO: Get actual count from broker
+    request->sl_perc = (request->sl > 0) ? abs(request->open_price - request->sl) / request->open_price : 0.0f;
+    request->tp_perc = (request->tp > 0) ? abs(request->tp - request->open_price) / request->open_price : 0.0f;
     request->has_sl = (trade->sl > 0) ? 1.0f : 0.0f;
     request->has_tp = (trade->tp > 0) ? 1.0f : 0.0f;
+    request->profitable_ratio = 0.5f; // TODO: Calculate from broker's trade history
+    request->num_open_trades = 1; // TODO: Get from broker system
+    request->num_closed_trades = 10; // TODO: Get from broker system
+    request->age = 30; // TODO: Get from broker CRM
+    request->days_since_reg = 100; // TODO: Get from broker system
+    request->deposit_lifetime = (float)user->balance * 1.2f; // Simplified estimate
+    request->deposit_count = 5; // TODO: Get from broker system
+    request->withdraw_lifetime = (float)user->balance * 0.1f; // Simplified estimate
+    request->withdraw_count = 1; // TODO: Get from broker system
+    request->vip = 0; // TODO: Get from broker system
+    request->holding_time_sec = 3600; // TODO: Calculate from recent trade history
+    request->lot_usd_value = 100000.0f; // Standard lot size
+    request->max_drawdown = -500.0f; // TODO: Calculate from trade history
+    request->max_runup = 1000.0f; // TODO: Calculate from trade history
+    request->volume_24h = request->lot_volume * 5; // TODO: Get from broker system
+    request->trader_tenure_days = (float)request->days_since_reg;
+    request->deposit_to_withdraw_ratio = request->deposit_lifetime / max(1.0f, request->withdraw_lifetime);
+    request->education_known = 0; // TODO: Get from broker CRM
+    request->occupation_known = 0; // TODO: Get from broker CRM
+    request->lot_to_balance_ratio = (request->lot_volume * 100000.0f) / max(1.0f, request->opening_balance);
+    request->deposit_density = request->deposit_count / max(1.0f, (float)request->days_since_reg);
+    request->withdrawal_density = request->withdraw_count / max(1.0f, (float)request->days_since_reg);
+    request->turnover_per_trade = request->turnover_usd / max(1.0f, request->num_closed_trades);
     
-    // Symbol and group
+    // NEW: Recent Performance Metrics (37-45) - CRITICAL FOR ML QUALITY
+    // TODO: These need to be implemented with access to broker's trade history database
+    request->profitable_ratio_24h = 0.6f; // TODO: Calculate from trades in last 24 hours
+    request->profitable_ratio_48h = 0.55f; // TODO: Calculate from trades in last 48 hours
+    request->profitable_ratio_72h = 0.5f; // TODO: Calculate from trades in last 72 hours
+    request->trades_count_24h = 3; // TODO: Count trades closed in last 24 hours
+    request->trades_count_48h = 7; // TODO: Count trades closed in last 48 hours
+    request->trades_count_72h = 12; // TODO: Count trades closed in last 72 hours
+    request->avg_profit_24h = 150.0f; // TODO: Calculate average profit in last 24 hours
+    request->avg_profit_48h = 125.0f; // TODO: Calculate average profit in last 48 hours
+    request->avg_profit_72h = 100.0f; // TODO: Calculate average profit in last 72 hours
+    
+    // Context & Metadata (46-60)
     strcpy_s(request->symbol, trade->symbol);
     strcpy_s(request->inst_group, user->group);
+    strcpy_s(request->frequency, "medium"); // TODO: Calculate from trading patterns
+    strcpy_s(request->trading_group, user->group);
+    strcpy_s(request->licence, "CY"); // TODO: Get from broker configuration
+    strcpy_s(request->platform, "MT4"); // TODO: Detect platform type
+    strcpy_s(request->LEVEL_OF_EDUCATION, "unknown"); // TODO: Get from broker CRM
+    strcpy_s(request->OCCUPATION, "unknown"); // TODO: Get from broker CRM
+    strcpy_s(request->SOURCE_OF_WEALTH, "unknown"); // TODO: Get from broker CRM
+    strcpy_s(request->ANNUAL_DISPOSABLE_INCOME, "unknown"); // TODO: Get from broker CRM
+    strcpy_s(request->AVERAGE_FREQUENCY_OF_TRADES, "weekly"); // TODO: Calculate from patterns
+    strcpy_s(request->EMPLOYMENT_STATUS, "unknown"); // TODO: Get from broker CRM
+    strcpy_s(request->country_code, user->country ? user->country : "unknown");
+    strcpy_s(request->utm_medium, "unknown"); // TODO: Get from broker CRM
     
     g_logger.LogInfo("Scoring request built successfully");
+    g_logger.LogInfo("Key fields - Login: " + std::to_string(trade->login) + 
+                    ", Symbol: " + std::string(trade->symbol) + 
+                    ", Volume: " + std::to_string(request->lot_volume) + 
+                    ", Price: " + std::to_string(request->open_price) + 
+                    ", Balance: " + std::to_string(request->opening_balance) +
+                    ", Profitable_24h: " + std::to_string(request->profitable_ratio_24h) +
+                    ", Profitable_48h: " + std::to_string(request->profitable_ratio_48h) +
+                    ", Profitable_72h: " + std::to_string(request->profitable_ratio_72h));
 }
 
 void LogDecision(const MT4TradeRecord* trade, float score, double threshold, const char* routing) {

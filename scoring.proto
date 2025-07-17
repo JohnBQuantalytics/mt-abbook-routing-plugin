@@ -1,76 +1,81 @@
 syntax = "proto3";
 package scoring;
 
-// Client → Server request carries these features in this exact order:
 message ScoringRequest {
-  // Identifier for the request
-  string user_id = 1;
+    // Core Trade Data (1-5)
+    float open_price = 1;                    // Execution price at which the trade will open
+    float sl = 2;                           // Stop-loss price level the trader sets
+    float tp = 3;                           // Take-profit price level the trader sets
+    int64 deal_type = 4;                    // Trade direction: 0 = buy (long), 1 = sell (short)
+    float lot_volume = 5;                   // Position size in standard lots
 
-  // Numeric features (dtype=float32)
-  float open_price = 2; // f0
-  float sl = 3; // f1
-  float tp = 4; // f2
-  float deal_type = 5; // f3
-  float lot_volume = 6; // f4
-  float is_bonus = 7; // f5
-  float turnover_usd = 8; // f6
-  float opening_balance = 9; // f7
-  float concurrent_positions = 10; // f8
-  float sl_perc = 11; // f9
-  float tp_perc = 12; // f10
-  float has_sl = 13; // f11
-  float has_tp = 14; // f12
-  float profitable_ratio = 15; // f13
-  float num_open_trades = 16; // f14
-  float num_closed_trades = 17; // f15
-  float age = 18; // f16
-  float days_since_reg = 19; // f17
-  float deposit_lifetime = 20; // f18
-  float deposit_count = 21; // f19
-  float withdraw_lifetime = 22; // f20
-  float withdraw_count = 23; // f21
-  float vip = 24; // f22
-  float holding_time_sec = 25; // f23
-  float sl_missing = 26; // f24
-  float tp_missing = 27; // f25
-  float lot_usd_value = 28; // f26
-  float exposure_to_balance_ratio = 29; // f27
-  float rapid_entry_exit = 30; // f28
-  float abuse_risk_score = 31; // f29
-  float trader_tenure_days = 32; // f30
-  float deposit_to_withdraw_ratio = 33; // f31
-  float education_known = 34; // f32
-  float occupation_known = 35; // f33
-  float lot_to_balance_ratio = 36; // f34
-  float deposit_density = 37; // f35
-  float withdrawal_density = 38; // f36
-  float turnover_per_trade = 39; // f37
+    // Account & Trading History (6-36)
+    int64 is_bonus = 6;                     // Flag: 1 if bonus credit will be used, 0 if real funds
+    float turnover_usd = 7;                 // Total notional (USD) = open_price * lot_volume * contract_size
+    float opening_balance = 8;              // Account equity immediately before opening this trade
+    int64 concurrent_positions = 9;         // Number of other positions open at placement
+    float sl_perc = 10;                     // Stop-loss distance fraction = |open_price - sl| / open_price
+    float tp_perc = 11;                     // Take-profit distance fraction = |tp - open_price| / open_price
+    int64 has_sl = 12;                      // Indicator: 1 if a stop-loss is set, else 0
+    int64 has_tp = 13;                      // Indicator: 1 if a take-profit is set, else 0
+    float profitable_ratio = 14;            // Proportion of past closed trades that were profitable
+    int64 num_open_trades = 15;             // Number of trades currently open
+    int64 num_closed_trades = 16;           // Total number of historical trades closed
+    int64 age = 17;                         // Trader's age in years
+    int64 days_since_reg = 18;              // Days since registration
+    float deposit_lifetime = 19;            // Total deposited over account lifetime
+    int64 deposit_count = 20;               // Number of deposit transactions
+    float withdraw_lifetime = 21;           // Total withdrawn over account lifetime
+    int64 withdraw_count = 22;              // Number of withdrawal transactions
+    int64 vip = 23;                         // VIP status: 1 = VIP, 0 = regular
+    int64 holding_time_sec = 24;            // Average duration of trades in the last 1–2h
+    float lot_usd_value = 25;               // USD value of one lot
+    float max_drawdown = 26;                // Maximum drawdown (negative value)
+    float max_runup = 27;                   // Maximum runup (positive value)
+    float volume_24h = 28;                  // Total trading volume (lots) in last 24h
+    float trader_tenure_days = 29;          // Days since account opened
+    float deposit_to_withdraw_ratio = 30;   // deposit_lifetime / max(1, withdraw_lifetime)
+    int64 education_known = 31;             // 1 if education provided, else 0
+    int64 occupation_known = 32;            // 1 if occupation provided, else 0
+    float lot_to_balance_ratio = 33;        // (lot_volume * contract_size) / opening_balance
+    float deposit_density = 34;             // deposit_count / max(1, days_since_reg)
+    float withdrawal_density = 35;          // withdraw_count / max(1, days_since_reg)
+    float turnover_per_trade = 36;          // turnover_usd / max(1, num_closed_trades)
 
-  // String features (dtype=string)
-  string symbol = 40; // f38
-  string inst_group = 41; // f39
-  string frequency = 42; // f40
-  string trading_group = 43; // f41
-  string licence = 44; // f42
-  string platform = 45; // f43
-  string level_of_education = 46; // f44
-  string occupation = 47; // f45
-  string source_of_wealth = 48; // f46
-  string annual_disposable_income = 49; // f47
-  string average_frequency_of_trades = 50; // f48
-  string employment_status = 51; // f49
-  string country_code = 52; // f50
-  string utm_medium = 53; // f51
+    // Recent Performance Metrics (37-45) - CRITICAL FOR ML QUALITY
+    float profitable_ratio_24h = 37;        // Profitability rate for last 24 hours
+    float profitable_ratio_48h = 38;        // Profitability rate for last 48 hours
+    float profitable_ratio_72h = 39;        // Profitability rate for last 72 hours
+    int64 trades_count_24h = 40;            // Number of trades closed in last 24 hours
+    int64 trades_count_48h = 41;            // Number of trades closed in last 48 hours
+    int64 trades_count_72h = 42;            // Number of trades closed in last 72 hours
+    float avg_profit_24h = 43;              // Average profit per trade in last 24 hours (USD)
+    float avg_profit_48h = 44;              // Average profit per trade in last 48 hours (USD)
+    float avg_profit_72h = 45;              // Average profit per trade in last 72 hours (USD)
+
+    // Context & Metadata (46-60)
+    string symbol = 46;                     // Trading symbol (e.g., "EURUSD")
+    string inst_group = 47;                 // Instrument group (e.g., "FXMajors")
+    string frequency = 48;                  // Trading frequency (e.g., "medium")
+    string trading_group = 49;              // Product grouping/path code
+    string licence = 50;                    // Licensing jurisdiction (e.g., "CY")
+    string platform = 51;                   // Trading platform (e.g., "MT5")
+    string LEVEL_OF_EDUCATION = 52;         // Education level (e.g., "bachelor")
+    string OCCUPATION = 53;                 // Occupation (e.g., "engineer")
+    string SOURCE_OF_WEALTH = 54;           // Source of wealth (e.g., "salary")
+    string ANNUAL_DISPOSABLE_INCOME = 55;   // Income bracket (e.g., "50k-100k")
+    string AVERAGE_FREQUENCY_OF_TRADES = 56; // Trade frequency (e.g., "weekly")
+    string EMPLOYMENT_STATUS = 57;          // Employment status (e.g., "employed")
+    string country_code = 58;               // Country code (e.g., "CY")
+    string utm_medium = 59;                 // UTM medium (e.g., "cpc")
+    string user_id = 60;                    // Client-provided ID for external service queries
 }
 
-// Server → Client response
 message ScoringResponse {
-  string user_id = 1;
-  float score = 2;
-  repeated string warnings = 3;
+    float score = 1;                        // Model's computed score (0.0 to 1.0)
+    repeated string warnings = 2;           // Any warnings produced during scoring
 }
 
-// RPC service definition.
 service ScoringService {
-  rpc Score (ScoringRequest) returns (ScoringResponse);
+    rpc GetScore (ScoringRequest) returns (ScoringResponse);
 } 
