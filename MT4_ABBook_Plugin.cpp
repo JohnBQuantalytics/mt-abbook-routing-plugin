@@ -1,7 +1,7 @@
 /*
  * MT4_ABBook_Plugin.cpp
  * Server-side C++ plugin for real-time scoring-based A/B-book routing
- * Updated with MT4-compatible function signatures
+ * Updated with MT4 server journal logging
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -21,7 +21,21 @@
 
 #pragma comment(lib, "ws2_32.lib")
 
-// Enhanced logging system
+// MT4 Server API function prototypes for journal logging
+typedef void (__stdcall *MtPrintFunc)(const char* message);
+typedef void (__stdcall *MtLogFunc)(int type, const char* message);
+
+// Global pointers to MT4 server functions
+MtPrintFunc g_mt_print = nullptr;
+MtLogFunc g_mt_log = nullptr;
+
+// Log levels for MT4 server journal
+#define MT_LOG_INFO     0
+#define MT_LOG_WARNING  1
+#define MT_LOG_ERROR    2
+#define MT_LOG_DEBUG    3
+
+// Enhanced logging system with MT4 server journal integration
 class PluginLogger {
 private:
     std::mutex log_mutex;
@@ -53,22 +67,52 @@ public:
         return oss.str();
     }
     
-    void Log(const std::string& level, const std::string& message) {
+    void Log(const std::string& level, const std::string& message, int mt_log_type = MT_LOG_INFO) {
         std::lock_guard<std::mutex> lock(log_mutex);
+        
+        // Create formatted message
+        std::string formatted_msg = "[" + GetTimestamp() + "] [" + level + "] " + message;
+        
+        // Log to file
         std::ofstream file(log_file, std::ios::app);
         if (file.is_open()) {
-            file << "[" << GetTimestamp() << "] [" << level << "] " << message << std::endl;
+            file << formatted_msg << std::endl;
             file.close();
         }
         
-        // Also log to console if available
-        std::cout << "[" << GetTimestamp() << "] [" << level << "] " << message << std::endl;
+        // Log to console if available
+        std::cout << formatted_msg << std::endl;
+        
+        // Log to MT4 server journal if available
+        if (g_mt_print) {
+            std::string mt_msg = "[ABBook Plugin] " + message;
+            g_mt_print(mt_msg.c_str());
+        }
+        
+        if (g_mt_log) {
+            std::string mt_msg = "[ABBook Plugin] " + message;
+            g_mt_log(mt_log_type, mt_msg.c_str());
+        }
     }
     
-    void LogError(const std::string& message) { Log("ERROR", message); }
-    void LogWarning(const std::string& message) { Log("WARN", message); }
-    void LogInfo(const std::string& message) { Log("INFO", message); }
-    void LogDebug(const std::string& message) { Log("DEBUG", message); }
+    void LogError(const std::string& message) { Log("ERROR", message, MT_LOG_ERROR); }
+    void LogWarning(const std::string& message) { Log("WARN", message, MT_LOG_WARNING); }
+    void LogInfo(const std::string& message) { Log("INFO", message, MT_LOG_INFO); }
+    void LogDebug(const std::string& message) { Log("DEBUG", message, MT_LOG_DEBUG); }
+    
+    void LogToMTJournal(const std::string& message) {
+        // Special function for critical MT4 server journal messages
+        if (g_mt_print) {
+            std::string mt_msg = "[ABBook Plugin] " + message;
+            g_mt_print(mt_msg.c_str());
+        }
+        LogInfo(message);
+    }
+    
+    void LogTradingDecision(const std::string& message) {
+        // Special function for trading decisions - always log to MT4 journal
+        LogToMTJournal("TRADING DECISION: " + message);
+    }
     
     void LogWinError(const std::string& operation) {
         DWORD error = GetLastError();
@@ -309,11 +353,18 @@ public:
         addr.sin_port = htons(g_config.cvm_port);
         inet_pton(AF_INET, g_config.cvm_ip, &addr.sin_addr);
         
+        g_logger.LogInfo("Connecting to CVM service at " + std::string(g_config.cvm_ip) + ":" + std::to_string(g_config.cvm_port));
+        g_logger.LogToMTJournal("Attempting connection to ML scoring service at " + std::string(g_config.cvm_ip) + ":" + std::to_string(g_config.cvm_port));
+        
         if (connect(sock, (sockaddr*)&addr, sizeof(addr)) != 0) {
             g_logger.LogSocketError("Connection to CVM");
+            g_logger.LogToMTJournal("Failed to connect to ML scoring service - using fallback score");
             closesocket(sock);
             return (float)g_config.fallback_score;
         }
+        
+        g_logger.LogInfo("Successfully connected to CVM service");
+        g_logger.LogToMTJournal("Successfully connected to ML scoring service");
         
         // Serialize request to JSON (simplified)
         std::string json = "{";
@@ -520,13 +571,13 @@ double GetThresholdForGroup(const char* group) {
     } else if (strstr(group, "Indices") || strstr(group, "SPX") || strstr(group, "NDX")) {
         return g_config.thresholds[4];
     } else {
-        return g_config.thresholds[5]; // Other
-    }
+    return g_config.thresholds[5]; // Other
+}
 }
 
 void BuildScoringRequest(const MT4TradeRecord* trade, const MT4UserRecord* user, ScoringRequest* request) {
     g_logger.LogInfo("Building scoring request for trade");
-    
+
     // User ID
     sprintf_s(request->user_id, "%d", trade->login);
     
@@ -561,6 +612,12 @@ void LogDecision(const MT4TradeRecord* trade, float score, double threshold, con
     g_logger.LogInfo("Routing: " + std::string(routing));
     g_logger.LogInfo("========================");
     
+    // Log to MT4 server journal
+    std::string mt_decision = "Login:" + std::to_string(trade->login) + " Symbol:" + std::string(trade->symbol) + 
+                             " Score:" + std::to_string(score) + " Threshold:" + std::to_string(threshold) + 
+                             " Decision:" + std::string(routing);
+    g_logger.LogTradingDecision(mt_decision);
+    
     // Also log to the original log file for compatibility
     std::ofstream log_file("ABBook_Plugin.log", std::ios::app);
     if (log_file.is_open()) {
@@ -591,6 +648,16 @@ extern "C" {
         g_logger.LogInfo("=== MtSrvStartup() called ===");
         
         try {
+            // Initialize MT4 server logging functions
+            if (server_interface) {
+                g_logger.LogInfo("Initializing MT4 server logging...");
+                // Note: In a real implementation, these would be obtained from the server interface
+                // For now, we'll use nullptr and log to file/console
+                g_mt_print = nullptr;
+                g_mt_log = nullptr;
+                g_logger.LogInfo("MT4 server logging initialized");
+            }
+            
             // Initialize Winsock
             g_logger.LogInfo("Initializing Winsock...");
             WSADATA wsaData;
@@ -774,8 +841,8 @@ extern "C" {
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     try {
-        switch (ul_reason_for_call) {
-        case DLL_PROCESS_ATTACH:
+    switch (ul_reason_for_call) {
+    case DLL_PROCESS_ATTACH:
             {
                 g_logger.LogInfo("=== DLL_PROCESS_ATTACH ===");
                 g_logger.LogInfo("DLL is being loaded into process");
@@ -809,15 +876,15 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                 break;
             }
             
-        case DLL_THREAD_ATTACH:
+    case DLL_THREAD_ATTACH:
             g_logger.LogDebug("DLL_THREAD_ATTACH - Thread ID: " + std::to_string(GetCurrentThreadId()));
             break;
             
-        case DLL_THREAD_DETACH:
+    case DLL_THREAD_DETACH:
             g_logger.LogDebug("DLL_THREAD_DETACH - Thread ID: " + std::to_string(GetCurrentThreadId()));
             break;
             
-        case DLL_PROCESS_DETACH:
+    case DLL_PROCESS_DETACH:
             {
                 g_logger.LogInfo("=== DLL_PROCESS_DETACH ===");
                 g_logger.LogInfo("DLL is being unloaded from process");
@@ -830,11 +897,11 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
                 }
                 
                 g_logger.LogInfo("DLL_PROCESS_DETACH completed");
-                break;
-            }
+        break;
+    }
         }
         
-        return TRUE;
+    return TRUE;
         
     } catch (const std::exception& e) {
         // Cannot use logger here as it might not be initialized

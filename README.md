@@ -2,6 +2,14 @@
 
 A comprehensive server-side plugin system for MetaTrader 4 and MetaTrader 5 that routes trades to A-book or B-book based on real-time scores from an external machine learning service.
 
+## 📋 **Documentation**
+
+- **[Product Requirements Document (PRD)](PRODUCT_REQUIREMENTS_DOCUMENT.md)** - Complete product specification and requirements
+- **[Technical Specification](TECHNICAL_SPECIFICATION.md)** - Complete technical specification with all 51 fields
+- **[Broker Integration Questions](BROKER_INTEGRATION_QUESTIONS.md)** - Essential questions for broker meetings
+- **[Solution Summary](SOLUTION_SUMMARY.md)** - Technical implementation overview
+- **[Installation Manual](INSTALLATION_MANUAL.md)** - Complete setup and deployment guide
+
 ## Features
 
 - **Real-time Scoring**: Integrates with external ML scoring service via TCP/Protobuf

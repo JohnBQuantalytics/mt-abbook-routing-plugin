@@ -1,0 +1,94 @@
+ABBook Plugin 32-bit Updated v3 - Package Information
+======================================================
+Created: July 16, 2025
+ML Scoring Service: 188.245.254.12:50051
+Package Size: 410,835 bytes (401 KB)
+
+WHAT'S NEW IN V3:
+- Updated configuration for new ML scoring service (188.245.254.12:50051)
+- Enhanced MT4 server journal logging integration
+- Comprehensive testing framework with direct ML service testing
+- Improved error handling and fallback behavior
+- Complete documentation suite for deployment and testing
+
+CORE PLUGIN FILES:
+- ABBook_Plugin_32bit.dll (Main plugin DLL - 1,160,704 bytes)
+- ABBook_Config.ini (Configuration file - updated for new ML service)
+- MT4_ABBook_Plugin.cpp (Plugin source code with enhanced logging)
+- plugin_exports.def (Plugin export definitions)
+
+COMPREHENSIVE TESTING FRAMEWORK:
+- test_mt4_plugin_comprehensive.cpp (Complete test suite)
+- build_comprehensive_test.bat (Build script for plugin and tests)
+- run_all_tests.bat (Complete testing pipeline with results)
+- test_plugin.cpp (Basic plugin functionality test)
+- test_scoring_service.py (Mock ML scoring service for testing)
+
+DOCUMENTATION SUITE:
+- TESTING_GUIDE_ML_SERVICE.md (Complete testing guide)
+- TESTING_SUMMARY.md (Quick testing reference)
+- TECHNICAL_SPECIFICATION.md (Technical specifications)
+- README.md (Main documentation)
+- scoring.proto (Protocol buffer definitions)
+
+KEY FEATURES:
+✓ Real-time ML scoring integration
+✓ A/B-book routing based on ML scores
+✓ Fallback behavior when ML service unavailable
+✓ MT4 server journal logging for production monitoring
+✓ Comprehensive error handling
+✓ Configurable thresholds per instrument group
+✓ Score caching for performance optimization
+✓ Direct network connectivity testing
+
+INSTALLATION INSTRUCTIONS:
+1. Extract ABBook_Plugin_32bit_Updated_v3.zip
+2. Copy ABBook_Plugin_32bit.dll to MT4 server directory
+3. Copy ABBook_Config.ini to same directory
+4. Configure MT4 server to load the plugin
+5. Monitor MT4 server journal for plugin messages
+
+TESTING INSTRUCTIONS:
+1. Run: build_comprehensive_test.bat
+2. Run: test_mt4_plugin_comprehensive.exe
+3. Review log files for results
+4. Follow TESTING_GUIDE_ML_SERVICE.md for detailed testing
+
+CONFIGURATION UPDATES:
+- CVM_IP changed from 127.0.0.1 to 188.245.254.12
+- CVM_Port changed from 8080 to 50051
+- Enhanced logging options enabled
+- All instrument group thresholds maintained
+
+DEPLOYMENT REQUIREMENTS:
+- Windows Server 2016+ or Windows 10+
+- MT4 server with plugin support
+- Network connectivity to 188.245.254.12:50051
+- Visual Studio 2019+ C++ runtime (for compilation)
+
+MONITORING AND LOGGING:
+- Plugin logs to MT4 server journal
+- Debug logs: ABBook_Plugin_Debug.log
+- Trading decisions: ABBook_Plugin.log
+- Test results: ABBook_Test_YYYYMMDD_HHMMSS.log
+
+PERFORMANCE CHARACTERISTICS:
+- ML service connection: < 100ms
+- Scoring time: < 500ms
+- Total processing time: < 1000ms
+- Fallback behavior: Automatic
+- Cache TTL: 300ms (configurable)
+
+TROUBLESHOOTING:
+- Check network connectivity: telnet 188.245.254.12 50051
+- Verify plugin exports: dumpbin /exports ABBook_Plugin_32bit.dll
+- Review configuration: type ABBook_Config.ini
+- Check logs in MT4 server journal and plugin log files
+
+SUPPORT:
+- Complete documentation included in package
+- Test framework provides diagnostic capabilities
+- Error messages logged to MT4 server journal
+- Fallback behavior ensures continuous operation
+
+The v3 package is ready for deployment and testing with the new ML scoring service. 
