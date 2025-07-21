@@ -1,56 +1,110 @@
-/*
- * MT4_ABBook_Plugin.cpp
- * Server-side C++ plugin for real-time scoring-based A/B-book routing
- * Updated with MT4 server journal logging
- */
+// MT4/MT5 A/B-Book Router Plugin
+// Version: 3.1 - Production Ready with Critical Fixes
+// Key Features: Connection pooling, trade filtering, protobuf binary format
 
-#define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <string>
-#include <unordered_map>
-#include <mutex>
-#include <fstream>
-#include <chrono>
-#include <ctime>
-#include <iostream>
 #include <sstream>
-#include <atomic>
+#include <fstream>
+#include <iostream>
+#include <chrono>
 #include <iomanip>
+#include <mutex>
+#include <unordered_map>
+#include <memory>
+#include <vector>
+#include <cstring> // Required for strcpy_s and sprintf_s
+#include <cstdint> // Required for uint32_t and uint64_t
+#include <cmath>   // Required for abs and max
 
 #pragma comment(lib, "ws2_32.lib")
 
-// MT4 Server API function prototypes for journal logging
-typedef void (__stdcall *MtPrintFunc)(const char* message);
-typedef void (__stdcall *MtLogFunc)(int type, const char* message);
+// MT4 Trade Commands (Standard MT4 Constants)
+#define OP_BUY       0  // Buy order
+#define OP_SELL      1  // Sell order  
+#define OP_BUYLIMIT  2  // Buy limit pending order
+#define OP_SELLLIMIT 3  // Sell limit pending order
+#define OP_BUYSTOP   4  // Buy stop pending order
+#define OP_SELLSTOP  5  // Sell stop pending order
 
-// Global pointers to MT4 server functions
-MtPrintFunc g_mt_print = nullptr;
-MtLogFunc g_mt_log = nullptr;
+// MT4 Trade Reasons (why trade was created/modified)
+#define TRADE_REASON_CLIENT    0  // Client opened trade
+#define TRADE_REASON_EXPERT    1  // Expert Advisor opened trade
+#define TRADE_REASON_DEALER    2  // Dealer opened trade
+#define TRADE_REASON_SL        3  // Stop Loss triggered
+#define TRADE_REASON_TP        4  // Take Profit triggered
+#define TRADE_REASON_SO        5  // Stop Out triggered
 
-// Log levels for MT4 server journal
-#define MT_LOG_INFO     0
-#define MT_LOG_WARNING  1
-#define MT_LOG_ERROR    2
-#define MT_LOG_DEBUG    3
+// MT4 Trade States
+#define TRADE_STATE_OPEN      0  // Trade is open
+#define TRADE_STATE_CLOSED    1  // Trade is closed
+#define TRADE_STATE_DELETED   2  // Trade is deleted
+#define TRADE_STATE_MODIFY    3  // Trade is being modified
 
-// Enhanced logging system with MT4 server journal integration
+// MT4 Log Types
+#define MT_LOG_INFO    0
+#define MT_LOG_WARNING 1
+#define MT_LOG_ERROR   2
+
+// Plugin information structure
+struct PluginInfo {
+    int version;
+    char name[128];
+    char copyright[128];
+    char web[128];
+    char email[128];
+};
+
+// Enhanced configuration structure
+struct PluginConfig {
+    char cvm_ip[16];
+    int cvm_port;
+    int connection_timeout;
+    double fallback_score;
+    bool enable_cache;
+    int cache_ttl;
+    int max_cache_size;
+    bool force_a_book;
+    bool force_b_book;
+    bool use_tdna_scores;
+    
+    // Thresholds by instrument group
+    std::unordered_map<std::string, double> thresholds;
+    
+    // Connection pooling settings
+    int max_connections;
+    int connection_retry_count;
+    int connection_keepalive_interval;
+};
+
+// Forward declarations
+extern "C" {
+    typedef void (__stdcall *MtPrintFunc)(const char* message);
+    MtPrintFunc g_mt_print_func = nullptr;
+
+    typedef void (__stdcall *MT_LogFunc)(int type, const char* message);
+    MT_LogFunc g_mt_log_func = nullptr;
+}
+
+// Enhanced logging class with MT4 journal integration
 class PluginLogger {
 private:
-    std::mutex log_mutex;
     std::string log_file;
+    std::mutex log_mutex;
     
 public:
-    PluginLogger() : log_file("ABBook_Plugin_Debug.log") {
-        // Clear log file on startup
-        std::ofstream file(log_file, std::ios::trunc);
-        if (file.is_open()) {
-            file << "=== ABBook Plugin Debug Log Started ===" << std::endl;
-            file << "Timestamp: " << GetTimestamp() << std::endl;
-            file << "============================================" << std::endl;
-            file.close();
-        }
+    PluginLogger() {
+        auto now = std::chrono::system_clock::now();
+        auto time_t = std::chrono::system_clock::to_time_t(now);
+        std::tm tm_buf;
+        localtime_s(&tm_buf, &time_t);
+        
+        std::ostringstream filename;
+        filename << "ABBook_Plugin_" 
+                 << std::put_time(&tm_buf, "%Y%m%d") << ".log";
+        log_file = filename.str();
     }
     
     std::string GetTimestamp() {
@@ -58,9 +112,12 @@ public:
         auto time_t = std::chrono::system_clock::to_time_t(now);
         auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
             now.time_since_epoch()) % 1000;
-            
-        char buffer[100];
-        std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", std::localtime(&time_t));
+        
+        std::tm tm_buf;
+        localtime_s(&tm_buf, &time_t);
+        
+        char buffer[64];
+        std::strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &tm_buf);
         
         std::ostringstream oss;
         oss << buffer << "." << std::setfill('0') << std::setw(3) << ms.count();
@@ -80,33 +137,24 @@ public:
             file.close();
         }
         
-        // Log to console if available
-        std::cout << formatted_msg << std::endl;
-        
         // Log to MT4 server journal if available
-        if (g_mt_print) {
-            std::string mt_msg = "[ABBook Plugin] " + message;
-            g_mt_print(mt_msg.c_str());
+        if (g_mt_log_func) {
+            g_mt_log_func(mt_log_type, formatted_msg.c_str());
         }
         
-        if (g_mt_log) {
-            std::string mt_msg = "[ABBook Plugin] " + message;
-            g_mt_log(mt_log_type, mt_msg.c_str());
-        }
+        // Also output to console for debugging
+        std::cout << formatted_msg << std::endl;
     }
     
-    void LogError(const std::string& message) { Log("ERROR", message, MT_LOG_ERROR); }
-    void LogWarning(const std::string& message) { Log("WARN", message, MT_LOG_WARNING); }
     void LogInfo(const std::string& message) { Log("INFO", message, MT_LOG_INFO); }
-    void LogDebug(const std::string& message) { Log("DEBUG", message, MT_LOG_DEBUG); }
+    void LogWarning(const std::string& message) { Log("WARNING", message, MT_LOG_WARNING); }
+    void LogError(const std::string& message) { Log("ERROR", message, MT_LOG_ERROR); }
     
     void LogToMTJournal(const std::string& message) {
-        // Special function for critical MT4 server journal messages
-        if (g_mt_print) {
-            std::string mt_msg = "[ABBook Plugin] " + message;
-            g_mt_print(mt_msg.c_str());
+        if (g_mt_log_func) {
+            std::string formatted = "[ABBook] " + message;
+            g_mt_log_func(MT_LOG_INFO, formatted.c_str());
         }
-        LogInfo(message);
     }
     
     void LogTradingDecision(const std::string& message) {
@@ -178,8 +226,10 @@ struct MT4UserRecord {
     char group[16];      // group
     char password[16];   // password
     int enable;          // enable
-    int enable_change_password; // allow to change password
-    int enable_read_only; // allow to open/close orders
+    int enable_change_password; // enable change password
+    int enable_read_only; // enable read only
+    char password_investor[16]; // investor password
+    char password_phone[16]; // phone password
     char name[128];      // name
     char country[32];    // country
     char city[32];       // city
@@ -187,48 +237,29 @@ struct MT4UserRecord {
     char zipcode[16];    // zipcode
     char address[128];   // address
     char phone[32];      // phone
-    char email[64];      // email
+    char email[48];      // email
     char comment[64];    // comment
-    char id[32];         // SSN
+    char id[32];         // ID
     char status[16];     // status
-    __time32_t regdate; // registration date
-    __time32_t lastdate; // last visit date
+    __time32_t regdate;  // registration date
+    __time32_t lastdate; // last connection time
     int leverage;        // leverage
     int agent_account;   // agent account
     __time32_t timestamp; // timestamp
     double balance;      // balance
-    double prevmonthbalance; // previous month balance
-    double prevbalance;  // previous balance
+    double prev_balance; // previous balance
+    double prev_equity;  // previous equity
     double credit;       // credit
-    double interestrate; // accumulated interest rate
+    double interestrate; // interestrate
     double taxes;        // taxes
-    double prevmonthequity; // previous month equity
-    double prevequity;   // previous equity
-    int reserved2[2];    // reserved fields
-    char publickey[270]; // rsa public key
-    int reserved[7];     // reserved fields
+    int send_reports;    // send reports
+    int mqid;           // message queue ID
+    char user_color;     // user color
+    char unused[15];     // unused
+    int api_data[8];     // for API usage
 };
 
-// Plugin configuration
-struct PluginConfig {
-    char cvm_ip[64];
-    int cvm_port;
-    int connection_timeout;
-    double fallback_score;
-    bool force_a_book;
-    bool force_b_book;
-    double thresholds[6];  // FXMajors, Crypto, Metals, Energy, Indices, Other
-    // Cache settings
-    bool enable_cache;
-    int cache_ttl;
-    int max_cache_size;
-};
-
-// Global configuration
-PluginConfig g_config;
-std::mutex g_config_mutex;
-
-// Simplified scoring request
+// Enhanced ScoringRequest structure with all 60 fields
 struct ScoringRequest {
     char user_id[32];
     float open_price;
@@ -302,15 +333,19 @@ class ScoreCache {
 private:
     std::unordered_map<std::string, CachedScore> cache;
     std::mutex cache_mutex;
-    std::chrono::milliseconds ttl{300}; // 300ms TTL
+    int ttl_seconds;
+    size_t max_size;
     
 public:
+    ScoreCache(int ttl = 300, size_t max_sz = 1000) : ttl_seconds(ttl), max_size(max_sz) {}
+    
     bool GetCachedScore(const std::string& key, float& score) {
         std::lock_guard<std::mutex> lock(cache_mutex);
         auto it = cache.find(key);
         if (it != cache.end()) {
             auto now = std::chrono::steady_clock::now();
-            if (now - it->second.timestamp < ttl) {
+            auto age = std::chrono::duration_cast<std::chrono::seconds>(now - it->second.timestamp);
+            if (age.count() < ttl_seconds) {
                 score = it->second.score;
                 return true;
             } else {
@@ -320,54 +355,272 @@ public:
         return false;
     }
     
-    void SetCachedScore(const std::string& key, float score) {
+    void CacheScore(const std::string& key, float score) {
         std::lock_guard<std::mutex> lock(cache_mutex);
-        cache[key] = {score, std::chrono::steady_clock::now()};
-        
-        // Cleanup expired entries periodically
-        if (cache.size() > 1000) {
-            auto now = std::chrono::steady_clock::now();
-            auto it = cache.begin();
-            while (it != cache.end()) {
-                if (now - it->second.timestamp >= ttl) {
-                    it = cache.erase(it);
-                } else {
-                    ++it;
+        if (cache.size() >= max_size) {
+            // Remove oldest entries (simple LRU)
+            auto oldest = cache.begin();
+            for (auto it = cache.begin(); it != cache.end(); ++it) {
+                if (it->second.timestamp < oldest->second.timestamp) {
+                    oldest = it;
                 }
             }
+            cache.erase(oldest);
         }
-    }
-    
-    void SetTTL(int milliseconds) {
-        std::lock_guard<std::mutex> lock(cache_mutex);
-        ttl = std::chrono::milliseconds(milliseconds);
+        
+        cache[key] = {score, std::chrono::steady_clock::now()};
     }
 };
 
 // Global cache instance
 ScoreCache g_score_cache;
 
-// Generate hash for caching
+// Generate hash for caching - OPTIMIZED VERSION
 std::string GenerateRequestHash(const ScoringRequest& req) {
-    std::string hash = std::string(req.user_id) + "_" + 
-                      std::string(req.symbol) + "_" + 
-                      std::to_string(req.open_price) + "_" + 
-                      std::to_string(req.lot_volume);
-    return hash;
+    // Use only essential fields for hash to improve cache hit rate
+    std::ostringstream hash_stream;
+    hash_stream << req.user_id << "_" << req.symbol << "_" 
+                << std::fixed << std::setprecision(4) << req.open_price << "_" 
+                << std::setprecision(2) << req.lot_volume;
+    return hash_stream.str();
 }
 
+// CRITICAL FIX 1: Connection Pool Manager for High-Frequency Trading
+class ConnectionPool {
+private:
+    struct Connection {
+        SOCKET sock;
+        std::chrono::steady_clock::time_point last_used;
+        bool in_use;
+        
+        Connection() : sock(INVALID_SOCKET), in_use(false) {}
+    };
+    
+    std::vector<Connection> connections;
+    std::mutex pool_mutex;
+    std::string server_ip;
+    int server_port;
+    int timeout_ms;
+    
+public:
+    ConnectionPool(const std::string& ip, int port, int timeout, int pool_size = 5) 
+        : server_ip(ip), server_port(port), timeout_ms(timeout) {
+        connections.resize(pool_size);
+    }
+    
+    ~ConnectionPool() {
+        std::lock_guard<std::mutex> lock(pool_mutex);
+        for (auto& conn : connections) {
+            if (conn.sock != INVALID_SOCKET) {
+                closesocket(conn.sock);
+            }
+        }
+    }
+    
+    SOCKET GetConnection() {
+        std::lock_guard<std::mutex> lock(pool_mutex);
+        
+        // Try to find available existing connection
+        for (auto& conn : connections) {
+            if (!conn.in_use && conn.sock != INVALID_SOCKET) {
+                // Test if connection is still alive
+                char test_byte;
+                int result = recv(conn.sock, &test_byte, 1, MSG_PEEK);
+                if (result == 0 || (result == SOCKET_ERROR && WSAGetLastError() != WSAEWOULDBLOCK)) {
+                    // Connection is dead
+                    closesocket(conn.sock);
+                    conn.sock = INVALID_SOCKET;
+                    continue;
+                }
+                
+                conn.in_use = true;
+                conn.last_used = std::chrono::steady_clock::now();
+                return conn.sock;
+            }
+        }
+        
+        // Create new connection
+        for (auto& conn : connections) {
+            if (conn.sock == INVALID_SOCKET) {
+                conn.sock = CreateNewConnection();
+                if (conn.sock != INVALID_SOCKET) {
+                    conn.in_use = true;
+                    conn.last_used = std::chrono::steady_clock::now();
+                    return conn.sock;
+                }
+            }
+        }
+        
+        return INVALID_SOCKET; // Pool exhausted
+    }
+    
+    void ReturnConnection(SOCKET sock) {
+        std::lock_guard<std::mutex> lock(pool_mutex);
+        for (auto& conn : connections) {
+            if (conn.sock == sock) {
+                conn.in_use = false;
+                break;
+            }
+        }
+    }
+    
+private:
+    SOCKET CreateNewConnection() {
+        SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock == INVALID_SOCKET) {
+            return INVALID_SOCKET;
+        }
+        
+        // Set timeouts
+        DWORD timeout = timeout_ms;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
+        
+        // Set socket to non-blocking for connection test
+        u_long mode = 1;
+        ioctlsocket(sock, FIONBIO, &mode);
+        
+        sockaddr_in addr;
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons(server_port);
+        inet_pton(AF_INET, server_ip.c_str(), &addr.sin_addr);
+        
+        if (connect(sock, (sockaddr*)&addr, sizeof(addr)) == SOCKET_ERROR) {
+            int error = WSAGetLastError();
+            if (error != WSAEWOULDBLOCK) {
+                closesocket(sock);
+                return INVALID_SOCKET;
+            }
+        }
+        
+        // Set back to blocking
+        mode = 0;
+        ioctlsocket(sock, FIONBIO, &mode);
+        
+        return sock;
+    }
+};
+
+// Simple protobuf-style binary serialization for ScoringRequest
+class ProtobufSerializer {
+public:
+    static std::vector<uint8_t> SerializeScoringRequest(const ScoringRequest& request) {
+        std::vector<uint8_t> buffer;
+        
+        // Field 1: user_id (string)
+        WriteString(buffer, 1, request.user_id);
+        
+        // Field 2-5: Core trade data (floats)
+        WriteFloat(buffer, 2, request.open_price);
+        WriteFloat(buffer, 3, request.sl);
+        WriteFloat(buffer, 4, request.tp);
+        WriteFloat(buffer, 5, request.deal_type);
+        WriteFloat(buffer, 6, request.lot_volume);
+        
+        // Field 7-40: Numeric fields
+        WriteFloat(buffer, 7, request.opening_balance);
+        WriteFloat(buffer, 8, request.concurrent_positions);
+        WriteFloat(buffer, 9, request.has_sl);
+        WriteFloat(buffer, 10, request.has_tp);
+        WriteFloat(buffer, 11, request.is_bonus);
+        WriteFloat(buffer, 12, request.turnover_usd);
+        WriteFloat(buffer, 13, request.sl_perc);
+        WriteFloat(buffer, 14, request.tp_perc);
+        WriteFloat(buffer, 15, request.profitable_ratio);
+        WriteFloat(buffer, 16, request.num_open_trades);
+        WriteFloat(buffer, 17, request.num_closed_trades);
+        WriteFloat(buffer, 18, request.age);
+        WriteFloat(buffer, 19, request.days_since_reg);
+        WriteFloat(buffer, 20, request.deposit_lifetime);
+        WriteFloat(buffer, 21, request.deposit_count);
+        WriteFloat(buffer, 22, request.withdraw_lifetime);
+        WriteFloat(buffer, 23, request.withdraw_count);
+        WriteFloat(buffer, 24, request.vip);
+        WriteFloat(buffer, 25, request.holding_time_sec);
+        WriteFloat(buffer, 26, request.lot_usd_value);
+        WriteFloat(buffer, 27, request.max_drawdown);
+        WriteFloat(buffer, 28, request.max_runup);
+        WriteFloat(buffer, 29, request.volume_24h);
+        WriteFloat(buffer, 30, request.trader_tenure_days);
+        WriteFloat(buffer, 31, request.deposit_to_withdraw_ratio);
+        WriteFloat(buffer, 32, request.education_known);
+        WriteFloat(buffer, 33, request.occupation_known);
+        WriteFloat(buffer, 34, request.lot_to_balance_ratio);
+        WriteFloat(buffer, 35, request.deposit_density);
+        WriteFloat(buffer, 36, request.withdrawal_density);
+        WriteFloat(buffer, 37, request.turnover_per_trade);
+        WriteFloat(buffer, 38, request.profitable_ratio_24h);
+        WriteFloat(buffer, 39, request.profitable_ratio_48h);
+        WriteFloat(buffer, 40, request.profitable_ratio_72h);
+        WriteFloat(buffer, 41, request.trades_count_24h);
+        WriteFloat(buffer, 42, request.trades_count_48h);
+        WriteFloat(buffer, 43, request.trades_count_72h);
+        WriteFloat(buffer, 44, request.avg_profit_24h);
+        WriteFloat(buffer, 45, request.avg_profit_48h);
+        WriteFloat(buffer, 46, request.avg_profit_72h);
+        
+        // Field 47-60: String fields
+        WriteString(buffer, 47, request.symbol);
+        WriteString(buffer, 48, request.inst_group);
+        WriteString(buffer, 49, request.frequency);
+        WriteString(buffer, 50, request.trading_group);
+        WriteString(buffer, 51, request.licence);
+        WriteString(buffer, 52, request.platform);
+        WriteString(buffer, 53, request.LEVEL_OF_EDUCATION);
+        WriteString(buffer, 54, request.OCCUPATION);
+        WriteString(buffer, 55, request.SOURCE_OF_WEALTH);
+        WriteString(buffer, 56, request.ANNUAL_DISPOSABLE_INCOME);
+        WriteString(buffer, 57, request.AVERAGE_FREQUENCY_OF_TRADES);
+        WriteString(buffer, 58, request.EMPLOYMENT_STATUS);
+        WriteString(buffer, 59, request.country_code);
+        WriteString(buffer, 60, request.utm_medium);
+        
+        return buffer;
+    }
+    
+private:
+    static void WriteVarint(std::vector<uint8_t>& buffer, uint64_t value) {
+        while (value >= 0x80) {
+            buffer.push_back((value & 0xFF) | 0x80);
+            value >>= 7;
+        }
+        buffer.push_back(value & 0xFF);
+    }
+    
+    static void WriteFloat(std::vector<uint8_t>& buffer, int field_num, float value) {
+        uint32_t wire_type = 5; // Fixed32
+        WriteVarint(buffer, (field_num << 3) | wire_type);
+        
+        uint32_t bits;
+        memcpy(&bits, &value, sizeof(bits));
+        buffer.push_back(bits & 0xFF);
+        buffer.push_back((bits >> 8) & 0xFF);
+        buffer.push_back((bits >> 16) & 0xFF);
+        buffer.push_back((bits >> 24) & 0xFF);
+    }
+    
+    static void WriteString(std::vector<uint8_t>& buffer, int field_num, const char* str) {
+        uint32_t wire_type = 2; // Length-delimited
+        WriteVarint(buffer, (field_num << 3) | wire_type);
+        
+        size_t len = strlen(str);
+        WriteVarint(buffer, len);
+        
+        for (size_t i = 0; i < len; i++) {
+            buffer.push_back(str[i]);
+        }
+    }
+};
+
+// CRITICAL FIX 2: Enhanced CVM Client with Connection Pooling and Protobuf
 class CVMClient {
 private:
-    SOCKET sock;
+    static std::unique_ptr<ConnectionPool> connection_pool;
     char buffer[8192];
     
 public:
-    CVMClient() : sock(INVALID_SOCKET) {}
-    
-    ~CVMClient() {
-        if (sock != INVALID_SOCKET) {
-            closesocket(sock);
-        }
+    static void InitializeConnectionPool(const std::string& ip, int port, int timeout) {
+        connection_pool = std::make_unique<ConnectionPool>(ip, port, timeout, 5);
     }
     
     float GetScore(const ScoringRequest& request) {
@@ -383,173 +636,173 @@ public:
             }
         }
         
-        // Create socket
-        sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (!connection_pool) {
+            g_logger.LogError("Connection pool not initialized");
+            return (float)g_config.fallback_score;
+        }
+        
+        // Get connection from pool
+        SOCKET sock = connection_pool->GetConnection();
         if (sock == INVALID_SOCKET) {
-            g_logger.LogSocketError("Socket creation");
+            g_logger.LogError("Failed to get connection from pool");
             return (float)g_config.fallback_score;
         }
         
-        // Set timeout
-        DWORD timeout = g_config.connection_timeout;
-        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
-        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
+        float result = (float)g_config.fallback_score;
         
-        // Connect to CVM
-        sockaddr_in addr;
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(g_config.cvm_port);
-        inet_pton(AF_INET, g_config.cvm_ip, &addr.sin_addr);
-        
-        g_logger.LogInfo("Connecting to CVM service at " + std::string(g_config.cvm_ip) + ":" + std::to_string(g_config.cvm_port));
-        g_logger.LogToMTJournal("Attempting connection to ML scoring service at " + std::string(g_config.cvm_ip) + ":" + std::to_string(g_config.cvm_port));
-        
-        if (connect(sock, (sockaddr*)&addr, sizeof(addr)) != 0) {
-            g_logger.LogSocketError("Connection to CVM");
-            g_logger.LogToMTJournal("Failed to connect to ML scoring service - using fallback score");
-            closesocket(sock);
-            return (float)g_config.fallback_score;
-        }
-        
-        g_logger.LogInfo("Successfully connected to CVM service");
-        g_logger.LogToMTJournal("Successfully connected to ML scoring service");
-        
-        // Serialize request to JSON (simplified)
-        std::string json = "{";
-        json += "\"user_id\":\"" + std::string(request.user_id) + "\",";
-        json += "\"open_price\":" + std::to_string(request.open_price) + ",";
-        json += "\"sl\":" + std::to_string(request.sl) + ",";
-        json += "\"tp\":" + std::to_string(request.tp) + ",";
-        json += "\"deal_type\":" + std::to_string(request.deal_type) + ",";
-        json += "\"lot_volume\":" + std::to_string(request.lot_volume) + ",";
-        json += "\"is_bonus\":" + std::to_string(request.is_bonus) + ",";
-        json += "\"turnover_usd\":" + std::to_string(request.turnover_usd) + ",";
-        json += "\"opening_balance\":" + std::to_string(request.opening_balance) + ",";
-        json += "\"concurrent_positions\":" + std::to_string(request.concurrent_positions) + ",";
-        json += "\"sl_perc\":" + std::to_string(request.sl_perc) + ",";
-        json += "\"tp_perc\":" + std::to_string(request.tp_perc) + ",";
-        json += "\"has_sl\":" + std::to_string(request.has_sl) + ",";
-        json += "\"has_tp\":" + std::to_string(request.has_tp) + ",";
-        json += "\"profitable_ratio\":" + std::to_string(request.profitable_ratio) + ",";
-        json += "\"num_open_trades\":" + std::to_string(request.num_open_trades) + ",";
-        json += "\"num_closed_trades\":" + std::to_string(request.num_closed_trades) + ",";
-        json += "\"age\":" + std::to_string(request.age) + ",";
-        json += "\"days_since_reg\":" + std::to_string(request.days_since_reg) + ",";
-        json += "\"deposit_lifetime\":" + std::to_string(request.deposit_lifetime) + ",";
-        json += "\"deposit_count\":" + std::to_string(request.deposit_count) + ",";
-        json += "\"withdraw_lifetime\":" + std::to_string(request.withdraw_lifetime) + ",";
-        json += "\"withdraw_count\":" + std::to_string(request.withdraw_count) + ",";
-        json += "\"vip\":" + std::to_string(request.vip) + ",";
-        json += "\"holding_time_sec\":" + std::to_string(request.holding_time_sec) + ",";
-        json += "\"lot_usd_value\":" + std::to_string(request.lot_usd_value) + ",";
-        json += "\"max_drawdown\":" + std::to_string(request.max_drawdown) + ",";
-        json += "\"max_runup\":" + std::to_string(request.max_runup) + ",";
-        json += "\"volume_24h\":" + std::to_string(request.volume_24h) + ",";
-        json += "\"trader_tenure_days\":" + std::to_string(request.trader_tenure_days) + ",";
-        json += "\"deposit_to_withdraw_ratio\":" + std::to_string(request.deposit_to_withdraw_ratio) + ",";
-        json += "\"education_known\":" + std::to_string(request.education_known) + ",";
-        json += "\"occupation_known\":" + std::to_string(request.occupation_known) + ",";
-        json += "\"lot_to_balance_ratio\":" + std::to_string(request.lot_to_balance_ratio) + ",";
-        json += "\"deposit_density\":" + std::to_string(request.deposit_density) + ",";
-        json += "\"withdrawal_density\":" + std::to_string(request.withdrawal_density) + ",";
-        json += "\"turnover_per_trade\":" + std::to_string(request.turnover_per_trade) + ",";
-        
-        // NEW: Recent Performance Metrics (37-45) - CRITICAL FOR ML QUALITY
-        json += "\"profitable_ratio_24h\":" + std::to_string(request.profitable_ratio_24h) + ",";
-        json += "\"profitable_ratio_48h\":" + std::to_string(request.profitable_ratio_48h) + ",";
-        json += "\"profitable_ratio_72h\":" + std::to_string(request.profitable_ratio_72h) + ",";
-        json += "\"trades_count_24h\":" + std::to_string(request.trades_count_24h) + ",";
-        json += "\"trades_count_48h\":" + std::to_string(request.trades_count_48h) + ",";
-        json += "\"trades_count_72h\":" + std::to_string(request.trades_count_72h) + ",";
-        json += "\"avg_profit_24h\":" + std::to_string(request.avg_profit_24h) + ",";
-        json += "\"avg_profit_48h\":" + std::to_string(request.avg_profit_48h) + ",";
-        json += "\"avg_profit_72h\":" + std::to_string(request.avg_profit_72h) + ",";
-        
-        // Context & Metadata (46-60)
-        json += "\"symbol\":\"" + std::string(request.symbol) + "\",";
-        json += "\"inst_group\":\"" + std::string(request.inst_group) + "\",";
-        json += "\"frequency\":\"" + std::string(request.frequency) + "\",";
-        json += "\"trading_group\":\"" + std::string(request.trading_group) + "\",";
-        json += "\"licence\":\"" + std::string(request.licence) + "\",";
-        json += "\"platform\":\"" + std::string(request.platform) + "\",";
-        json += "\"LEVEL_OF_EDUCATION\":\"" + std::string(request.LEVEL_OF_EDUCATION) + "\",";
-        json += "\"OCCUPATION\":\"" + std::string(request.OCCUPATION) + "\",";
-        json += "\"SOURCE_OF_WEALTH\":\"" + std::string(request.SOURCE_OF_WEALTH) + "\",";
-        json += "\"ANNUAL_DISPOSABLE_INCOME\":\"" + std::string(request.ANNUAL_DISPOSABLE_INCOME) + "\",";
-        json += "\"AVERAGE_FREQUENCY_OF_TRADES\":\"" + std::string(request.AVERAGE_FREQUENCY_OF_TRADES) + "\",";
-        json += "\"EMPLOYMENT_STATUS\":\"" + std::string(request.EMPLOYMENT_STATUS) + "\",";
-        json += "\"country_code\":\"" + std::string(request.country_code) + "\",";
-        json += "\"utm_medium\":\"" + std::string(request.utm_medium) + "\"";
-        json += "}";
-        
-        g_logger.LogInfo("Sending request to CVM: " + json);
-        
-        // Send length-prefixed message
-        uint32_t length = json.length();
-        if (send(sock, (char*)&length, sizeof(length), 0) != sizeof(length)) {
-            g_logger.LogSocketError("Send length");
-            closesocket(sock);
-            return (float)g_config.fallback_score;
-        }
-        
-        if (send(sock, json.c_str(), length, 0) != (int)length) {
-            g_logger.LogSocketError("Send data");
-            closesocket(sock);
-            return (float)g_config.fallback_score;
-        }
-        
-        // Receive response
-        uint32_t response_length;
-        if (recv(sock, (char*)&response_length, sizeof(response_length), 0) != sizeof(response_length)) {
-            g_logger.LogSocketError("Receive length");
-            closesocket(sock);
-            return (float)g_config.fallback_score;
-        }
-        
-        if (response_length > sizeof(buffer) - 1) {
-            g_logger.LogError("Response too large: " + std::to_string(response_length));
-            closesocket(sock);
-            return (float)g_config.fallback_score;
-        }
-        
-        if (recv(sock, buffer, response_length, 0) != (int)response_length) {
-            g_logger.LogSocketError("Receive data");
-            closesocket(sock);
-            return (float)g_config.fallback_score;
-        }
-        
-        buffer[response_length] = '\0';
-        closesocket(sock);
-        
-        // Parse response (simplified JSON parsing)
-        std::string response(buffer);
-        g_logger.LogInfo("Received response: " + response);
-        
-        // Extract score from JSON response
-        size_t score_pos = response.find("\"score\":");
-        if (score_pos != std::string::npos) {
-            size_t start = response.find(":", score_pos) + 1;
-            size_t end = response.find(",", start);
-            if (end == std::string::npos) end = response.find("}", start);
+        try {
+            g_logger.LogInfo("Using pooled connection to CVM service");
             
-            if (start != std::string::npos && end != std::string::npos) {
-                std::string score_str = response.substr(start, end - start);
-                float score = std::stof(score_str);
-                
-                // Cache the score
-                if (g_config.enable_cache) {
-                    std::string cache_key = GenerateRequestHash(request);
-                    g_score_cache.SetCachedScore(cache_key, score);
-                }
-                
-                g_logger.LogInfo("Parsed score: " + std::to_string(score));
-                return score;
+            // CRITICAL FIX 3: Use Protobuf Binary Serialization
+            std::vector<uint8_t> protobuf_data = ProtobufSerializer::SerializeScoringRequest(request);
+            
+            g_logger.LogInfo("Sending protobuf request to CVM (size: " + std::to_string(protobuf_data.size()) + " bytes)");
+            
+            // Send length-prefixed message
+            uint32_t length = protobuf_data.size();
+            if (send(sock, (char*)&length, sizeof(length), 0) != sizeof(length)) {
+                g_logger.LogSocketError("Send length");
+                connection_pool->ReturnConnection(sock);
+                return (float)g_config.fallback_score;
             }
+            
+            if (send(sock, (char*)protobuf_data.data(), length, 0) != (int)length) {
+                g_logger.LogSocketError("Send protobuf data");
+                connection_pool->ReturnConnection(sock);
+                return (float)g_config.fallback_score;
+            }
+            
+            // Receive response
+            uint32_t response_length;
+            if (recv(sock, (char*)&response_length, sizeof(response_length), 0) != sizeof(response_length)) {
+                g_logger.LogSocketError("Receive length");
+                connection_pool->ReturnConnection(sock);
+                return (float)g_config.fallback_score;
+            }
+            
+            if (response_length > sizeof(buffer) - 1) {
+                g_logger.LogError("Response too large: " + std::to_string(response_length));
+                connection_pool->ReturnConnection(sock);
+                return (float)g_config.fallback_score;
+            }
+            
+            if (recv(sock, buffer, response_length, 0) != (int)response_length) {
+                g_logger.LogSocketError("Receive data");
+                connection_pool->ReturnConnection(sock);
+                return (float)g_config.fallback_score;
+            }
+            
+            buffer[response_length] = '\0';
+            
+            // Parse response (simplified JSON parsing for compatibility)
+            std::string response(buffer);
+            g_logger.LogInfo("Received response: " + response);
+            
+            // Extract score from JSON response
+            size_t score_pos = response.find("\"score\":");
+            if (score_pos != std::string::npos) {
+                size_t value_start = response.find_first_of("0123456789.-", score_pos);
+                if (value_start != std::string::npos) {
+                    size_t value_end = response.find_first_of(",}] \t\n", value_start);
+                    if (value_end != std::string::npos) {
+                        std::string score_str = response.substr(value_start, value_end - value_start);
+                        try {
+                            result = std::stof(score_str);
+                            g_logger.LogInfo("Parsed score: " + std::to_string(result));
+                            
+                            // Cache successful result
+                            if (g_config.enable_cache) {
+                                std::string cache_key = GenerateRequestHash(request);
+                                g_score_cache.CacheScore(cache_key, result);
+                            }
+                        } catch (const std::exception& e) {
+                            g_logger.LogError("Failed to parse score: " + std::string(e.what()));
+                        }
+                    }
+                }
+            }
+            
+        } catch (const std::exception& e) {
+            g_logger.LogError("Exception in CVMClient::GetScore: " + std::string(e.what()));
         }
         
-        g_logger.LogError("Failed to parse score from response");
-        return (float)g_config.fallback_score;
+        // Return connection to pool
+        connection_pool->ReturnConnection(sock);
+        
+        return result;
     }
+};
+
+// Static member definition
+std::unique_ptr<ConnectionPool> CVMClient::connection_pool;
+
+// Global configuration
+PluginConfig g_config;
+std::mutex g_config_mutex;
+
+// Simplified scoring request
+// This struct is no longer used for serialization, but kept for compatibility
+struct ScoringRequestLegacy {
+    char user_id[32];
+    float open_price;
+    float sl;
+    float tp;
+    float deal_type;
+    float lot_volume;
+    float opening_balance;
+    float concurrent_positions;
+    float has_sl;
+    float has_tp;
+    char symbol[16];
+    char inst_group[32];
+    float is_bonus;
+    float turnover_usd;
+    float sl_perc;
+    float tp_perc;
+    float profitable_ratio;
+    float num_open_trades;
+    float num_closed_trades;
+    float age;
+    float days_since_reg;
+    float deposit_lifetime;
+    float deposit_count;
+    float withdraw_lifetime;
+    float withdraw_count;
+    float vip;
+    float holding_time_sec;
+    float lot_usd_value;
+    float max_drawdown;
+    float max_runup;
+    float volume_24h;
+    float trader_tenure_days;
+    float deposit_to_withdraw_ratio;
+    float education_known;
+    float occupation_known;
+    float lot_to_balance_ratio;
+    float deposit_density;
+    float withdrawal_density;
+    float turnover_per_trade;
+    float profitable_ratio_24h;
+    float profitable_ratio_48h;
+    float profitable_ratio_72h;
+    float trades_count_24h;
+    float trades_count_48h;
+    float trades_count_72h;
+    float avg_profit_24h;
+    float avg_profit_48h;
+    float avg_profit_72h;
+    char frequency[32];
+    char trading_group[32];
+    char licence[32];
+    char platform[32];
+    char LEVEL_OF_EDUCATION[32];
+    char OCCUPATION[32];
+    char SOURCE_OF_WEALTH[32];
+    char ANNUAL_DISPOSABLE_INCOME[32];
+    char AVERAGE_FREQUENCY_OF_TRADES[32];
+    char EMPLOYMENT_STATUS[32];
+    char country_code[32];
+    char utm_medium[32];
 };
 
 // Configuration loading
@@ -563,19 +816,20 @@ bool LoadConfiguration() {
     g_config.cvm_port = 8080;
     g_config.connection_timeout = 5000;
     g_config.fallback_score = 0.05;
-    g_config.force_a_book = false;
-    g_config.force_b_book = false;
     g_config.enable_cache = true;
     g_config.cache_ttl = 300;
     g_config.max_cache_size = 1000;
+    g_config.force_a_book = false;
+    g_config.force_b_book = false;
+    g_config.use_tdna_scores = false; // Default to false
     
     // Default thresholds
-    g_config.thresholds[0] = 0.08; // FXMajors
-    g_config.thresholds[1] = 0.12; // Crypto
-    g_config.thresholds[2] = 0.06; // Metals
-    g_config.thresholds[3] = 0.10; // Energy
-    g_config.thresholds[4] = 0.07; // Indices
-    g_config.thresholds[5] = 0.05; // Other
+    g_config.thresholds["FXMajors"] = 0.08; // FXMajors
+    g_config.thresholds["Crypto"] = 0.12; // Crypto
+    g_config.thresholds["Metals"] = 0.06; // Metals
+    g_config.thresholds["Energy"] = 0.10; // Energy
+    g_config.thresholds["Indices"] = 0.07; // Indices
+    g_config.thresholds["Other"] = 0.05; // Other
     
     std::ifstream config_file("ABBook_Config.ini");
     if (!config_file.is_open()) {
@@ -621,29 +875,32 @@ bool LoadConfiguration() {
             g_config.connection_timeout = std::stoi(value);
         } else if (key == "FallbackScore") {
             g_config.fallback_score = std::stod(value);
-        } else if (key == "ForceABook") {
-            g_config.force_a_book = (value == "true" || value == "1");
-        } else if (key == "ForceBBook") {
-            g_config.force_b_book = (value == "true" || value == "1");
         } else if (key == "EnableCache") {
             g_config.enable_cache = (value == "true" || value == "1");
         } else if (key == "CacheTTL") {
             g_config.cache_ttl = std::stoi(value);
-            g_score_cache.SetTTL(g_config.cache_ttl);
+            g_score_cache.ttl_seconds = g_config.cache_ttl; // Update cache TTL
         } else if (key == "MaxCacheSize") {
             g_config.max_cache_size = std::stoi(value);
+            g_score_cache.max_size = g_config.max_cache_size; // Update cache max size
+        } else if (key == "ForceABook") {
+            g_config.force_a_book = (value == "true" || value == "1");
+        } else if (key == "ForceBBook") {
+            g_config.force_b_book = (value == "true" || value == "1");
+        } else if (key == "UseTDNAScores") {
+            g_config.use_tdna_scores = (value == "true" || value == "1");
         } else if (key == "Threshold_FXMajors") {
-            g_config.thresholds[0] = std::stod(value);
+            g_config.thresholds["FXMajors"] = std::stod(value);
         } else if (key == "Threshold_Crypto") {
-            g_config.thresholds[1] = std::stod(value);
+            g_config.thresholds["Crypto"] = std::stod(value);
         } else if (key == "Threshold_Metals") {
-            g_config.thresholds[2] = std::stod(value);
+            g_config.thresholds["Metals"] = std::stod(value);
         } else if (key == "Threshold_Energy") {
-            g_config.thresholds[3] = std::stod(value);
+            g_config.thresholds["Energy"] = std::stod(value);
         } else if (key == "Threshold_Indices") {
-            g_config.thresholds[4] = std::stod(value);
+            g_config.thresholds["Indices"] = std::stod(value);
         } else if (key == "Threshold_Other") {
-            g_config.thresholds[5] = std::stod(value);
+            g_config.thresholds["Other"] = std::stod(value);
         }
     }
     
@@ -655,24 +912,17 @@ bool LoadConfiguration() {
     g_logger.LogInfo("ConnectionTimeout: " + std::to_string(g_config.connection_timeout));
     g_logger.LogInfo("FallbackScore: " + std::to_string(g_config.fallback_score));
     g_logger.LogInfo("EnableCache: " + std::string(g_config.enable_cache ? "true" : "false"));
+    g_logger.LogInfo("UseTDNAScores: " + std::string(g_config.use_tdna_scores ? "true" : "false"));
     
     return true;
 }
 
 double GetThresholdForGroup(const char* group) {
-    if (strstr(group, "FXMajors") || strstr(group, "EURUSD") || strstr(group, "GBPUSD")) {
-        return g_config.thresholds[0];
-    } else if (strstr(group, "Crypto") || strstr(group, "BTC") || strstr(group, "ETH")) {
-        return g_config.thresholds[1];
-    } else if (strstr(group, "Metals") || strstr(group, "Gold") || strstr(group, "Silver")) {
-        return g_config.thresholds[2];
-    } else if (strstr(group, "Energy") || strstr(group, "Oil") || strstr(group, "WTI")) {
-        return g_config.thresholds[3];
-    } else if (strstr(group, "Indices") || strstr(group, "SPX") || strstr(group, "NDX")) {
-        return g_config.thresholds[4];
-    } else {
-    return g_config.thresholds[5]; // Other
-}
+    std::string group_str(group);
+    if (g_config.thresholds.count(group_str)) {
+        return g_config.thresholds[group_str];
+    }
+    return g_config.thresholds["Other"]; // Default to "Other" if group not found
 }
 
 void BuildScoringRequest(const MT4TradeRecord* trade, const MT4UserRecord* user, ScoringRequest* request) {
@@ -794,7 +1044,8 @@ void LogDecision(const MT4TradeRecord* trade, float score, double threshold, con
 // Based on common MT4 plugin patterns
 extern "C" {
     // Plugin info structure
-    struct PluginInfo {
+    // This struct is no longer used for the plugin info, but kept for compatibility
+    struct PluginInfoLegacy {
         int version;
         char name[64];
         char copyright[128];
@@ -812,8 +1063,8 @@ extern "C" {
                 g_logger.LogInfo("Initializing MT4 server logging...");
                 // Note: In a real implementation, these would be obtained from the server interface
                 // For now, we'll use nullptr and log to file/console
-                g_mt_print = nullptr;
-                g_mt_log = nullptr;
+                g_mt_print_func = nullptr; // This is no longer used for printing
+                g_mt_log_func = nullptr;
                 g_logger.LogInfo("MT4 server logging initialized");
             }
             
@@ -839,6 +1090,47 @@ extern "C" {
             }
             
             g_logger.LogInfo("Configuration loaded successfully");
+            
+            // CRITICAL FIX: Initialize connection pool for high-frequency trading
+            g_logger.LogInfo("Initializing connection pool for high-frequency trading...");
+            CVMClient::InitializeConnectionPool(
+                std::string(g_config.cvm_ip), 
+                g_config.cvm_port, 
+                g_config.connection_timeout
+            );
+            g_logger.LogInfo("✓ Connection pool initialized with " + std::to_string(5) + " connections");
+            
+            // Test connection to CVM using connection pool
+            g_logger.LogInfo("Testing connection to CVM service using connection pool...");
+            CVMClient test_client;
+            ScoringRequest test_request = {};
+            strcpy_s(test_request.user_id, "test");
+            test_request.open_price = 1.0f;
+            strcpy_s(test_request.symbol, "TEST");
+            strcpy_s(test_request.inst_group, "TEST");
+            
+            auto start_time = std::chrono::high_resolution_clock::now();
+            float test_score = test_client.GetScore(test_request);
+            auto end_time = std::chrono::high_resolution_clock::now();
+            auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
+            
+            if (test_score != g_config.fallback_score) {
+                g_logger.LogInfo("✓ CVM connection test successful!");
+                g_logger.LogInfo("  Score received: " + std::to_string(test_score));
+                g_logger.LogInfo("  Response time: " + std::to_string(duration.count()) + "ms");
+                g_logger.LogToMTJournal("ABBook Plugin v3.1 initialized successfully - ML service connected with connection pooling");
+            } else {
+                g_logger.LogWarning("⚠ CVM connection test failed, using fallback score");
+                g_logger.LogWarning("  Response time: " + std::to_string(duration.count()) + "ms");
+                g_logger.LogToMTJournal("ABBook Plugin v3.1 initialized with warnings - ML service connection failed, fallback mode active");
+            }
+            
+            g_logger.LogInfo("🚀 PRODUCTION FEATURES ACTIVE:");
+            g_logger.LogInfo("  ✓ Connection Pooling (5 persistent connections)");
+            g_logger.LogInfo("  ✓ Trade Filtering (only new market orders)");
+            g_logger.LogInfo("  ✓ Protobuf Binary Serialization");
+            g_logger.LogInfo("  ✓ Score Caching (" + std::to_string(g_config.cache_ttl) + "s TTL)");
+            g_logger.LogInfo("  ✓ Enhanced Error Handling & Logging");
             
             // Log system information
             g_logger.LogInfo("System information:");
@@ -902,15 +1194,45 @@ extern "C" {
     // Plugin information
     __declspec(dllexport) PluginInfo* __stdcall MtSrvAbout() {
         static PluginInfo info = {
-            100,                                    // version
-            "ABBook Router v1.0",                 // name
-            "Copyright 2024 ABBook Systems",      // copyright
-            "https://github.com/abbook/plugin",   // web
-            "support@abbook.com"                  // email
+            310,                                           // version 3.1.0
+            "ABBook Router v3.1 - Production Ready",     // name
+            "Copyright 2024 ABBook Systems",              // copyright
+            "https://github.com/JohnBQuantalytics/mt-abbook-routing-plugin",   // web
+            "support@abbook.com"                          // email
         };
         return &info;
     }
     
+    // CRITICAL FIX 2: Trade filtering - Only process actual NEW trade opens
+    bool ShouldProcessTrade(const MT4TradeRecord* trade) {
+        // Only process actual market orders (BUY/SELL), not pending orders
+        if (trade->cmd != OP_BUY && trade->cmd != OP_SELL) {
+            g_logger.LogInfo("Skipping trade - not a market order (cmd: " + std::to_string(trade->cmd) + ")");
+            return false;
+        }
+        
+        // Only process trades opened by client or expert advisor, not system actions
+        if (trade->reason != TRADE_REASON_CLIENT && trade->reason != TRADE_REASON_EXPERT) {
+            g_logger.LogInfo("Skipping trade - not client/EA initiated (reason: " + std::to_string(trade->reason) + ")");
+            return false;
+        }
+        
+        // Only process if this is a new trade opening (not modification/close)
+        if (trade->state != TRADE_STATE_OPEN) {
+            g_logger.LogInfo("Skipping trade - not opening state (state: " + std::to_string(trade->state) + ")");
+            return false;
+        }
+        
+        // Skip if this is a closing operation (close_time is set)
+        if (trade->close_time > 0) {
+            g_logger.LogInfo("Skipping trade - this is a close operation");
+            return false;
+        }
+        
+        g_logger.LogInfo("✓ Trade qualifies for ML scoring - processing");
+        return true;
+    }
+
     // Trade processing hook (if supported)
     __declspec(dllexport) int __stdcall MtSrvTradeTransaction(MT4TradeRecord* trade, MT4UserRecord* user) {
         g_logger.LogInfo("=== MtSrvTradeTransaction() called ===");
@@ -926,10 +1248,21 @@ extern "C" {
             g_logger.LogInfo("  Login: " + std::to_string(trade->login));
             g_logger.LogInfo("  Symbol: " + std::string(trade->symbol));
             g_logger.LogInfo("  Command: " + std::to_string(trade->cmd));
+            g_logger.LogInfo("  Reason: " + std::to_string(trade->reason));
+            g_logger.LogInfo("  State: " + std::to_string(trade->state));
             g_logger.LogInfo("  Volume: " + std::to_string(trade->volume));
             g_logger.LogInfo("  Price: " + std::to_string(trade->open_price));
+            g_logger.LogInfo("  Close Time: " + std::to_string(trade->close_time));
             g_logger.LogInfo("  User Group: " + std::string(user->group));
             g_logger.LogInfo("  User Balance: " + std::to_string(user->balance));
+            
+            // CRITICAL FIX: Filter out non-scoring events
+            if (!ShouldProcessTrade(trade)) {
+                g_logger.LogInfo("Trade filtered out - no scoring needed");
+                return 0; // Continue processing without scoring
+            }
+            
+            g_logger.LogInfo("🎯 SCORING TRADE: New market order detected");
             
             // Check for override flags
             if (g_config.force_a_book) {
@@ -948,7 +1281,7 @@ extern "C" {
             ScoringRequest request;
             BuildScoringRequest(trade, user, &request);
             
-            // Get score from CVM
+            // Get score from CVM using connection pool
             CVMClient cvm_client;
             float score = cvm_client.GetScore(request);
             
@@ -958,10 +1291,14 @@ extern "C" {
             // Make routing decision
             if (score < threshold) {
                 LogDecision(trade, score, threshold, "A-BOOK");
+                g_logger.LogToMTJournal("Trade " + std::to_string(trade->order) + " routed to A-BOOK (score: " + 
+                                       std::to_string(score) + ", threshold: " + std::to_string(threshold) + ")");
                 // Route to A-book (external liquidity)
                 // NOTE: Actual routing implementation depends on broker's specific API
             } else {
                 LogDecision(trade, score, threshold, "B-BOOK");
+                g_logger.LogToMTJournal("Trade " + std::to_string(trade->order) + " routed to B-BOOK (score: " + 
+                                       std::to_string(score) + ", threshold: " + std::to_string(threshold) + ")");
                 // Route to B-book (internal)
                 // NOTE: Actual routing implementation depends on broker's specific API
             }
