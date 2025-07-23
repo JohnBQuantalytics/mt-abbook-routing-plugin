@@ -491,7 +491,8 @@ extern "C" {
         g_logger.Log("");
         g_logger.Log("PLUGIN READY: Waiting for trade transactions...");
         g_logger.Log("Note: If ML service IP needs whitelisting, plugin will work in fallback mode until connected");
-        return 0;
+        g_logger.Log("MtSrvStartup returning success code 1");
+        return 1; // Return 1 instead of 0 - some MT4 versions expect 1 for success
     }
 
     // Plugin cleanup
@@ -499,10 +500,10 @@ extern "C" {
         g_logger.Log("=== MT4 A/B-book Routing Plugin STOPPED ===");
     }
 
-    // Plugin about info
+    // Plugin about info - MT4 expects specific plugin info structure
     __declspec(dllexport) int __stdcall MtSrvAbout(void* reserved) {
         g_logger.Log("Plugin About requested - A/B-book Routing Plugin v1.0 (Official API)");
-        return 0;
+        return 1; // Return 1 to indicate success with plugin info
     }
 
     // Configuration update
