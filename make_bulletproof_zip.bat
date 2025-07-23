@@ -15,11 +15,15 @@ REM Use PowerShell to create zip
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 "$files = @( ^
 'ABBook_Plugin_Official_32bit.dll', ^
+'test_plugin_simple_32bit.dll', ^
 'MT4_ABBook_Plugin_Official.cpp', ^
+'test_plugin_simple.cpp', ^
 'build_official_plugin.bat', ^
+'build_test_plugin.bat', ^
 'plugin_exports.def', ^
 'BULLETPROOF_PLUGIN_FEATURES.md', ^
 'PLUGIN_VERSIONS_EXPLAINED.md', ^
+'PLUGIN_FIX_SUMMARY.md', ^
 'README.md', ^
 'TECHNICAL_SPECIFICATION.md', ^
 'PRODUCT_REQUIREMENTS_DOCUMENT.md', ^
@@ -60,12 +64,14 @@ echo ✓ Automatic retry with smart backoff
 echo ✓ Graceful fallback to A-book routing
 echo ✓ Official MT4 structures (no corruption)
 echo ✓ Production ready for immediate deployment
+echo ✓ Includes simple test plugin for compatibility checking
+echo ✓ Complete fix documentation and deployment guide
 echo.
 echo Ready for deployment to MT4 server!
 echo ===============================================
+echo.
 
 REM Show package details
-echo.
 echo Package details:
 dir ABBook_Plugin_BULLETPROOF_v4.0.zip
 
