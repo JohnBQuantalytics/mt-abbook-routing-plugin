@@ -17,6 +17,7 @@
 #include <thread>
 #include <unordered_map>
 #include <mutex>
+#include <excpt.h>  // For structured exception handling
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -522,21 +523,88 @@ extern "C" {
         
         // BULLETPROOF: Comprehensive exception handling to prevent plugin unloading
         try {
-            // Log raw trade data (using official structure)
-            g_logger.Log("=== TRADE TRANSACTION (Official API) ===");
+            g_logger.Log("=== TRADE TRANSACTION START ===");
+            g_logger.Log("CHECKPOINT 1: Function entry successful");
+            
+            // Enhanced input validation with detailed logging
+            g_logger.Log("CHECKPOINT 2: Validating trade pointer: " + std::to_string(reinterpret_cast<uintptr_t>(trade)));
+            g_logger.Log("CHECKPOINT 3: Validating user pointer: " + std::to_string(reinterpret_cast<uintptr_t>(user)));
+            
+            // Log raw memory to detect corruption patterns
+            g_logger.Log("=== RAW TRADE DATA ANALYSIS ===");
+            g_logger.Log("Raw Order: " + std::to_string(trade->order));
+            g_logger.Log("Raw Login: " + std::to_string(trade->login));
+            
+            // Safe symbol extraction with corruption detection
+            std::string raw_symbol(trade->symbol, 12);
+            std::string clean_symbol;
+            for (char c : raw_symbol) {
+                if (isalnum(c) || c == '_') {
+                    clean_symbol += c;
+                } else if (c == '\0') {
+                    break;
+                }
+            }
+            g_logger.Log("Raw Symbol: [" + raw_symbol + "]");
+            g_logger.Log("Clean Symbol: [" + clean_symbol + "]");
+            
+            g_logger.Log("Raw Command: " + std::to_string(trade->cmd));
+            g_logger.Log("Raw Volume: " + std::to_string(trade->volume));
+            g_logger.Log("Raw Price: " + std::to_string(trade->open_price));
+            g_logger.Log("Raw State: " + std::to_string(trade->state));
+            g_logger.Log("Raw Digits: " + std::to_string(trade->digits));
+            
+            // Data validation and normalization
+            int normalized_cmd = trade->cmd;
+            int normalized_volume = trade->volume;
+            double normalized_price = trade->open_price;
+            
+            // Detect and handle data corruption
+            bool data_corrupted = false;
+            
+            if (trade->cmd < 0 || trade->cmd > 5) {
+                g_logger.Log("WARNING: Command value out of range: " + std::to_string(trade->cmd));
+                normalized_cmd = (trade->cmd > 100) ? (trade->cmd - 100) : 0; // Handle offset corruption
+                data_corrupted = true;
+            }
+            
+            if (trade->volume <= 0 || trade->volume > 100000000) { // Reasonable volume limits
+                g_logger.Log("WARNING: Volume value suspicious: " + std::to_string(trade->volume));
+                normalized_volume = 100; // Default to 1 lot
+                data_corrupted = true;
+            }
+            
+            if (trade->open_price <= 0 || trade->open_price > 1000000) {
+                g_logger.Log("WARNING: Price value suspicious: " + std::to_string(trade->open_price));
+                normalized_price = 1.0; // Default price
+                data_corrupted = true;
+            }
+            
+            if (data_corrupted) {
+                g_logger.Log("=== DATA CORRUPTION DETECTED - USING NORMALIZED VALUES ===");
+            }
+            
+            // Log normalized data
+            g_logger.Log("=== PROCESSED TRADE DATA ===");
             g_logger.Log("Order: " + std::to_string(trade->order));
             g_logger.Log("Login: " + std::to_string(trade->login));
-            g_logger.Log("Symbol: " + std::string(trade->symbol, 12));
-            g_logger.Log("Command: " + std::to_string(trade->cmd) + " (" + GetCommandName(trade->cmd) + ")");
-            g_logger.Log("Volume: " + std::to_string(trade->volume));
-            g_logger.Log("Price: " + std::to_string(trade->open_price));
+            g_logger.Log("Symbol: " + clean_symbol);
+            g_logger.Log("Command: " + std::to_string(normalized_cmd) + " (" + GetCommandName(normalized_cmd) + ")");
+            g_logger.Log("Volume: " + std::to_string(normalized_volume));
+            g_logger.Log("Price: " + std::to_string(normalized_price));
             g_logger.Log("State: " + std::to_string(trade->state));
             
+            g_logger.Log("CHECKPOINT 4: Data logging completed successfully");
+            
             // Check if we should process this trade
+            g_logger.Log("CHECKPOINT 5: Checking if trade should be processed");
             if (!ShouldProcessTrade(trade)) {
                 g_logger.Log("Trade skipped - not a new market order");
+                g_logger.Log("CHECKPOINT 6: Trade processing completed (skipped)");
                 return 0;
             }
+            
+            g_logger.Log("CHECKPOINT 7: Trade approved for processing");
             
             // Display ML service status
             std::string ml_status;
@@ -547,13 +615,29 @@ extern "C" {
                 ml_status = "DISCONNECTED (failures: " + std::to_string(failures) + ")";
             }
             g_logger.Log("ML Service Status: " + ml_status);
+            g_logger.Log("CHECKPOINT 8: ML service status determined");
             
             // Get ML score (always returns valid score, even if ML service is down)
-            double score = g_cvm_client.GetScore(trade, user);
+            g_logger.Log("CHECKPOINT 9: About to call ML scoring service");
+            double score = 0.0;
+            try {
+                score = g_cvm_client.GetScore(trade, user);
+                g_logger.Log("CHECKPOINT 10: ML score retrieved successfully: " + std::to_string(score));
+            } catch (const std::exception& e) {
+                g_logger.Log("ERROR: Exception in ML scoring: " + std::string(e.what()));
+                score = g_config.fallback_score;
+                g_logger.Log("CHECKPOINT 10: Using fallback score due to exception");
+            } catch (...) {
+                g_logger.Log("ERROR: Unknown exception in ML scoring");
+                score = g_config.fallback_score;
+                g_logger.Log("CHECKPOINT 10: Using fallback score due to unknown exception");
+            }
             
-            // Determine instrument group and threshold
-            std::string instrument_group = GetInstrumentGroup(trade->symbol);
+            // Determine instrument group and threshold using clean symbol
+            g_logger.Log("CHECKPOINT 11: Determining instrument group");
+            std::string instrument_group = GetInstrumentGroup(clean_symbol.c_str());
             double threshold = GetThreshold(instrument_group);
+            g_logger.Log("CHECKPOINT 12: Threshold determined");
             
             // Make routing decision
             std::string routing_decision;
@@ -571,6 +655,8 @@ extern "C" {
                 routing_decision = "A-BOOK";  
             }
             
+            g_logger.Log("CHECKPOINT 13: Routing decision made");
+            
             // Log decision with context
             g_logger.Log("Score: " + std::to_string(score) + " (" + decision_basis + ")");
             g_logger.Log("Instrument Group: " + instrument_group);
@@ -582,21 +668,26 @@ extern "C" {
                 g_logger.Log("PLUGIN STATUS: Operating in FALLBACK mode - all trades processed normally");
             }
             
+            g_logger.Log("CHECKPOINT 14: About to complete trade processing");
             g_logger.Log("=====================================");
             
             // INTEGRATION POINT: In production, integrate with broker's routing system here
             // The plugin NEVER fails regardless of ML service status
             
+            g_logger.Log("CHECKPOINT 15: Trade processing completed successfully");
             return 0; // Always return success to prevent plugin unloading
             
         } catch (const std::bad_alloc& e) {
             g_logger.Log("CRITICAL: Memory allocation failed in MtSrvTradeTransaction - plugin remains stable");
+            g_logger.Log("CRASH PREVENTION: Returning safely from memory allocation error");
             return 0; // Plugin continues to operate
         } catch (const std::exception& e) {
             g_logger.Log("EXCEPTION in MtSrvTradeTransaction: " + std::string(e.what()) + " - plugin remains stable");
+            g_logger.Log("CRASH PREVENTION: Returning safely from standard exception");
             return 0; // Plugin continues to operate
         } catch (...) {
             g_logger.Log("UNKNOWN EXCEPTION in MtSrvTradeTransaction - plugin remains stable and continues operating");
+            g_logger.Log("CRASH PREVENTION: Returning safely from unknown exception");
             return 0; // Plugin continues to operate
         }
     }
@@ -611,15 +702,25 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     switch (fdwReason) {
         case DLL_PROCESS_ATTACH:
             g_logger.Log("DLL_PROCESS_ATTACH: Plugin loaded into MT4 server");
+            g_logger.Log("ATTACH INFO: hinstDLL=" + std::to_string(reinterpret_cast<uintptr_t>(hinstDLL)));
             break;
             
         case DLL_PROCESS_DETACH:
             g_logger.Log("DLL_PROCESS_DETACH: Plugin unloaded from MT4 server");
+            g_logger.Log("DETACH INFO: hinstDLL=" + std::to_string(reinterpret_cast<uintptr_t>(hinstDLL)));
+            if (lpvReserved) {
+                g_logger.Log("DETACH REASON: Process termination (MT4 crashed or shutdown)");
+            } else {
+                g_logger.Log("DETACH REASON: Normal DLL unload (FreeLibrary called)");
+            }
             break;
             
         case DLL_THREAD_ATTACH:
+            g_logger.Log("DLL_THREAD_ATTACH: New thread attached to plugin");
+            break;
+            
         case DLL_THREAD_DETACH:
-            // Handle thread attach/detach if needed
+            g_logger.Log("DLL_THREAD_DETACH: Thread detached from plugin");
             break;
     }
     return TRUE;
