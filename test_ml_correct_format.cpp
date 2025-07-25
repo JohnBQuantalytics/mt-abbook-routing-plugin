@@ -43,7 +43,8 @@ private:
     
     std::string EncodeFloat(int field_number, float value) {
         std::string result;
-        result += (char)((field_number << 3) | 5); // Wire type 5 for fixed32
+        uint32_t field_tag = (field_number << 3) | 5; // Wire type 5 for fixed32
+        result += EncodeVarint(field_tag); // Encode field tag as varint
         char* bytes = (char*)&value;
         for (int i = 0; i < 4; i++) {
             result += bytes[i];
@@ -53,21 +54,24 @@ private:
     
     std::string EncodeUInt32(int field_number, uint32_t value) {
         std::string result;
-        result += (char)((field_number << 3) | 0); // Wire type 0 for varint
+        uint32_t field_tag = (field_number << 3) | 0; // Wire type 0 for varint
+        result += EncodeVarint(field_tag); // Encode field tag as varint
         result += EncodeVarint(value);
         return result;
     }
     
     std::string EncodeInt32(int field_number, int32_t value) {
         std::string result;
-        result += (char)((field_number << 3) | 0); // Wire type 0 for varint
+        uint32_t field_tag = (field_number << 3) | 0; // Wire type 0 for varint
+        result += EncodeVarint(field_tag); // Encode field tag as varint
         result += EncodeVarint((uint64_t)value);
         return result;
     }
     
     std::string EncodeString(int field_number, const std::string& value) {
         std::string result;
-        result += (char)((field_number << 3) | 2); // Wire type 2 for length-delimited
+        uint32_t field_tag = (field_number << 3) | 2; // Wire type 2 for length-delimited
+        result += EncodeVarint(field_tag); // Encode field tag as varint
         result += EncodeVarint(value.length());
         result += value;
         return result;
@@ -105,7 +109,24 @@ private:
         request += EncodeString(51, "16813");                   // user_id
         
         LogWithTime("ScoringRequest created with " + std::to_string(request.length()) + " bytes");
-        LogWithTime("Fields: 12 numeric + 9 string = 21 total fields");
+        LogWithTime("Fields: 12 numeric + 21 string = 21 total fields");
+        
+        // DEBUG: Show exact bytes for user_id field
+        std::string user_id_debug = EncodeString(51, "16813");
+        std::string hex_output = "user_id field bytes: ";
+        for (size_t i = 0; i < user_id_debug.length(); i++) {
+            char hex_buf[4];
+            sprintf(hex_buf, "%02X ", (unsigned char)user_id_debug[i]);
+            hex_output += hex_buf;
+        }
+        LogWithTime(hex_output);
+        
+        // Verify field 51 calculation
+        int expected_byte = (51 << 3) | 2; // Field 51, wire type 2
+        char calc_info[100];
+        sprintf(calc_info, "Field 51 wire type 2 should be: 0x%02X (decimal %d)", expected_byte, expected_byte);
+        LogWithTime(calc_info);
+        
         return request;
     }
     

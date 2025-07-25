@@ -219,7 +219,8 @@ private:
     
     std::string EncodeFloat(int field_number, float value) {
         std::string result;
-        result += (char)((field_number << 3) | 5); // Wire type 5 for fixed32
+        uint32_t field_tag = (field_number << 3) | 5; // Wire type 5 for fixed32
+        result += EncodeVarint(field_tag); // Encode field tag as varint
         char* bytes = (char*)&value;
         for (int i = 0; i < 4; i++) {
             result += bytes[i];
@@ -229,21 +230,24 @@ private:
     
     std::string EncodeUInt32(int field_number, uint32_t value) {
         std::string result;
-        result += (char)((field_number << 3) | 0); // Wire type 0 for varint
+        uint32_t field_tag = (field_number << 3) | 0; // Wire type 0 for varint
+        result += EncodeVarint(field_tag); // Encode field tag as varint
         result += EncodeVarint(value);
         return result;
     }
     
     std::string EncodeInt32(int field_number, int32_t value) {
         std::string result;
-        result += (char)((field_number << 3) | 0); // Wire type 0 for varint
+        uint32_t field_tag = (field_number << 3) | 0; // Wire type 0 for varint
+        result += EncodeVarint(field_tag); // Encode field tag as varint
         result += EncodeVarint((uint64_t)value);
         return result;
     }
     
     std::string EncodeString(int field_number, const std::string& value) {
         std::string result;
-        result += (char)((field_number << 3) | 2); // Wire type 2 for length-delimited
+        uint32_t field_tag = (field_number << 3) | 2; // Wire type 2 for length-delimited
+        result += EncodeVarint(field_tag); // Encode field tag as varint
         result += EncodeVarint(value.length());
         result += value;
         return result;
