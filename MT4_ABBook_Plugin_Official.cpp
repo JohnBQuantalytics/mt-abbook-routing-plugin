@@ -538,15 +538,53 @@ extern "C" {
             // Safe symbol extraction with corruption detection
             std::string raw_symbol(trade->symbol, 12);
             std::string clean_symbol;
-            for (char c : raw_symbol) {
-                if (isalnum(c) || c == '_') {
-                    clean_symbol += c;
-                } else if (c == '\0') {
-                    break;
+            
+            // Enhanced symbol cleaning - look for known currency patterns
+            bool found_currency_start = false;
+            for (size_t i = 0; i < raw_symbol.length(); i++) {
+                char c = raw_symbol[i];
+                
+                // Skip garbage bytes at start, look for valid 3-letter currency codes
+                if (!found_currency_start) {
+                    // Common currency prefixes: USD, EUR, GBP, AUD, NZD, CAD, CHF, JPY
+                    if (i + 2 < raw_symbol.length()) {
+                        std::string potential = raw_symbol.substr(i, 3);
+                        if (potential == "USD" || potential == "EUR" || potential == "GBP" || 
+                            potential == "AUD" || potential == "NZD" || potential == "CAD" || 
+                            potential == "CHF" || potential == "JPY" || potential == "XPT" || 
+                            potential == "XAU" || potential == "GER" || potential == "UK1" ||
+                            potential == "FRA" || potential == "JPN") {
+                            found_currency_start = true;
+                            clean_symbol = potential;
+                            i += 2; // Skip next 2 chars as they're part of this currency
+                            continue;
+                        }
+                    }
+                } else {
+                    // After finding currency start, add valid characters
+                    if (isalnum(c)) {
+                        clean_symbol += c;
+                    } else if (c == '\0' || c == ' ') {
+                        break; // End of symbol
+                    }
                 }
             }
+            
+            // If no currency found, fall back to original cleaning
+            if (clean_symbol.empty()) {
+                for (char c : raw_symbol) {
+                    if (isalnum(c) || c == '_') {
+                        clean_symbol += c;
+                    } else if (c == '\0') {
+                        break;
+                    }
+                }
+            }
+            
             g_logger.Log("Raw Symbol: [" + raw_symbol + "]");
             g_logger.Log("Clean Symbol: [" + clean_symbol + "]");
+            std::string cleaning_method = found_currency_start ? "Currency pattern detected" : "Fallback cleaning";
+            g_logger.Log("Symbol cleaning method: " + cleaning_method);
             
             g_logger.Log("Raw Command: " + std::to_string(trade->cmd));
             g_logger.Log("Raw Volume: " + std::to_string(trade->volume));
@@ -601,10 +639,16 @@ extern "C" {
             if (!ShouldProcessTrade(trade)) {
                 g_logger.Log("Trade skipped - not a new market order");
                 g_logger.Log("CHECKPOINT 6: Trade processing completed (skipped)");
-                return 0;
+                return 1; // Changed to return 1 for consistency
             }
             
             g_logger.Log("CHECKPOINT 7: Trade approved for processing");
+            
+            // EXPERIMENTAL: Try early exit to test if data processing causes crash
+            // Uncomment next lines to test minimal processing
+            // g_logger.Log("EXPERIMENTAL: Early exit to test crash cause");
+            // g_logger.Log("CHECKPOINT 16: About to return early to MT4");
+            // return 1;
             
             // Display ML service status
             std::string ml_status;
@@ -620,18 +664,33 @@ extern "C" {
             // Get ML score (always returns valid score, even if ML service is down)
             g_logger.Log("CHECKPOINT 9: About to call ML scoring service");
             double score = 0.0;
+            bool ml_score_received = false;
+            
             try {
                 score = g_cvm_client.GetScore(trade, user);
-                g_logger.Log("CHECKPOINT 10: ML score retrieved successfully: " + std::to_string(score));
+                
+                // Check if this is actually a fallback score
+                if (score == g_config.fallback_score) {
+                    g_logger.Log("CHECKPOINT 10: Received fallback score (ML service failed): " + std::to_string(score));
+                    ml_score_received = false;
+                } else {
+                    g_logger.Log("CHECKPOINT 10: Received REAL ML score: " + std::to_string(score));
+                    ml_score_received = true;
+                }
             } catch (const std::exception& e) {
                 g_logger.Log("ERROR: Exception in ML scoring: " + std::string(e.what()));
                 score = g_config.fallback_score;
+                ml_score_received = false;
                 g_logger.Log("CHECKPOINT 10: Using fallback score due to exception");
             } catch (...) {
                 g_logger.Log("ERROR: Unknown exception in ML scoring");
                 score = g_config.fallback_score;
+                ml_score_received = false;
                 g_logger.Log("CHECKPOINT 10: Using fallback score due to unknown exception");
             }
+            
+            std::string score_status = ml_score_received ? "REAL ML SCORE" : "FALLBACK SCORE USED";
+            g_logger.Log("ML Score Status: " + score_status);
             
             // Determine instrument group and threshold using clean symbol
             g_logger.Log("CHECKPOINT 11: Determining instrument group");
@@ -675,20 +734,23 @@ extern "C" {
             // The plugin NEVER fails regardless of ML service status
             
             g_logger.Log("CHECKPOINT 15: Trade processing completed successfully");
-            return 0; // Always return success to prevent plugin unloading
+            g_logger.Log("CHECKPOINT 16: About to return to MT4 - trying different return value");
+            
+            // Try returning 1 instead of 0 - some MT4 versions expect different return codes
+            return 1; // Try returning 1 to see if this prevents MT4 crash
             
         } catch (const std::bad_alloc& e) {
             g_logger.Log("CRITICAL: Memory allocation failed in MtSrvTradeTransaction - plugin remains stable");
             g_logger.Log("CRASH PREVENTION: Returning safely from memory allocation error");
-            return 0; // Plugin continues to operate
+            return 1; // Try returning 1 for consistency
         } catch (const std::exception& e) {
             g_logger.Log("EXCEPTION in MtSrvTradeTransaction: " + std::string(e.what()) + " - plugin remains stable");
             g_logger.Log("CRASH PREVENTION: Returning safely from standard exception");
-            return 0; // Plugin continues to operate
+            return 1; // Try returning 1 for consistency
         } catch (...) {
             g_logger.Log("UNKNOWN EXCEPTION in MtSrvTradeTransaction - plugin remains stable and continues operating");
             g_logger.Log("CRASH PREVENTION: Returning safely from unknown exception");
-            return 0; // Plugin continues to operate
+            return 1; // Try returning 1 for consistency
         }
     }
 
