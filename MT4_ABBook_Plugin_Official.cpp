@@ -206,6 +206,125 @@ private:
         }
     }
     
+    // Protobuf wire format encoding functions
+    std::string EncodeVarint(uint64_t value) {
+        std::string result;
+        while (value >= 0x80) {
+            result += (char)((value & 0x7F) | 0x80);
+            value >>= 7;
+        }
+        result += (char)(value & 0x7F);
+        return result;
+    }
+    
+    std::string EncodeFloat(int field_number, float value) {
+        std::string result;
+        result += (char)((field_number << 3) | 5); // Wire type 5 for fixed32
+        char* bytes = (char*)&value;
+        for (int i = 0; i < 4; i++) {
+            result += bytes[i];
+        }
+        return result;
+    }
+    
+    std::string EncodeUInt32(int field_number, uint32_t value) {
+        std::string result;
+        result += (char)((field_number << 3) | 0); // Wire type 0 for varint
+        result += EncodeVarint(value);
+        return result;
+    }
+    
+    std::string EncodeInt32(int field_number, int32_t value) {
+        std::string result;
+        result += (char)((field_number << 3) | 0); // Wire type 0 for varint
+        result += EncodeVarint((uint64_t)value);
+        return result;
+    }
+    
+    std::string EncodeString(int field_number, const std::string& value) {
+        std::string result;
+        result += (char)((field_number << 3) | 2); // Wire type 2 for length-delimited
+        result += EncodeVarint(value.length());
+        result += value;
+        return result;
+    }
+    
+    std::string CreateScoringRequest(const TradeRecord* trade, const UserInfo* user) {
+        std::string request;
+        
+        // Clean and normalize trade data
+        float open_price = (trade->open_price > 0.0) ? (float)trade->open_price : 1.0f;
+        float lot_volume = (trade->volume > 0) ? (float)trade->volume / 100.0f : 1.0f; // MT4 volume is in lots*100
+        uint32_t deal_type = (trade->cmd == 0) ? 0 : 1; // 0=buy, 1=sell
+        
+        // Extract user ID safely
+        char user_id_str[32];
+        snprintf(user_id_str, sizeof(user_id_str), "%d", trade->login);
+        
+        // Calculate derived fields
+        float turnover_usd = open_price * lot_volume * 100000.0f; // Assuming standard lot size
+        float opening_balance = (user && user->balance > 0.0) ? (float)user->balance : 10000.0f;
+        
+        // Build protobuf request per work requirements
+        request += EncodeFloat(1, open_price);                    // open_price
+        request += EncodeFloat(2, open_price * 0.99f);            // sl (stop loss, estimated)
+        request += EncodeFloat(3, open_price * 1.01f);            // tp (take profit, estimated)
+        request += EncodeUInt32(4, deal_type);                    // deal_type (0=buy, 1=sell)
+        request += EncodeFloat(5, lot_volume);                    // lot_volume
+        request += EncodeInt32(6, 0);                             // is_bonus (0=real funds)
+        request += EncodeFloat(7, turnover_usd);                  // turnover_usd
+        request += EncodeFloat(8, opening_balance);               // opening_balance
+        request += EncodeInt32(9, 1);                             // concurrent_positions (estimated)
+        request += EncodeFloat(10, 0.01f);                        // sl_perc (1% estimated)
+        request += EncodeFloat(11, 0.01f);                        // tp_perc (1% estimated)
+        request += EncodeInt32(12, 1);                            // has_sl (1=has stop loss)
+        
+        // String fields (using defaults where user data unavailable)
+        request += EncodeString(42, "MT4");                       // platform
+        request += EncodeString(43, "unknown");                   // LEVEL_OF_EDUCATION
+        request += EncodeString(44, "unknown");                   // OCCUPATION
+        request += EncodeString(45, "unknown");                   // SOURCE_OF_WEALTH
+        request += EncodeString(46, "unknown");                   // ANNUAL_DISPOSABLE_INCOME
+        request += EncodeString(47, "unknown");                   // AVERAGE_FREQUENCY_OF_TRADES
+        request += EncodeString(48, "unknown");                   // EMPLOYMENT_STATUS
+        request += EncodeString(49, "US");                        // country_code (default)
+        request += EncodeString(50, "direct");                    // utm_medium (default)
+        request += EncodeString(51, user_id_str);                 // user_id
+        
+        logger->Log("ML SERVICE: Created protobuf request with " + std::to_string(request.length()) + " bytes");
+        return request;
+    }
+    
+    std::string CreateLengthPrefixedMessage(const std::string& protobuf_body) {
+        std::string message;
+        uint32_t length = protobuf_body.length();
+        
+        // Length prefix (4 bytes, network byte order)
+        message += (char)((length >> 24) & 0xFF);
+        message += (char)((length >> 16) & 0xFF);
+        message += (char)((length >> 8) & 0xFF);
+        message += (char)(length & 0xFF);
+        
+        // Protobuf body
+        message += protobuf_body;
+        
+        return message;
+    }
+    
+    float ParseScoreFromProtobuf(const char* protobuf_data, int length) {
+        for (int i = 0; i < length - 5; i++) {
+            // Look for field 1, wire type 5 (float): 0x0D
+            if ((unsigned char)protobuf_data[i] == 0x0D) {
+                float score;
+                memcpy(&score, protobuf_data + i + 1, 4);
+                logger->Log("ML SERVICE: Found score in protobuf: " + std::to_string(score));
+                return score;
+            }
+        }
+        logger->Log("ML SERVICE: No score field found in protobuf response");
+        return -2.0f; // Special value indicating "not found"
+    }
+    
 public:
     CVMClient(PluginConfig* cfg, PluginLogger* log) 
         : config(cfg), logger(log), ml_service_available(true), 
@@ -293,22 +412,14 @@ public:
                 return config->fallback_score;
             }
             
-            // Create scoring request (robust formatting)
-            char request[512];
-            int request_len = snprintf(request, sizeof(request) - 1, 
-                "SCORE_REQUEST|ORDER:%d|LOGIN:%d|SYMBOL:%.11s|CMD:%d|VOLUME:%d|PRICE:%.5f|END\n",
-                trade->order, trade->login, trade->symbol, trade->cmd, trade->volume, trade->open_price);
+            // Create scoring request (length-prefixed protobuf format)
+            std::string protobuf_request = CreateScoringRequest(trade, user);
+            std::string full_message = CreateLengthPrefixedMessage(protobuf_request);
             
-            if (request_len <= 0 || request_len >= sizeof(request)) {
-                logger->Log("ML SERVICE WARNING: Request formatting error - using fallback score");
-                closesocket(sock);
-                WSACleanup();
-                RecordConnectionResult(false);
-                return config->fallback_score;
-            }
+            logger->Log("ML SERVICE: Sending protobuf request (" + std::to_string(full_message.length()) + " bytes)");
             
             // Send request with error handling
-            if (send(sock, request, request_len, 0) == SOCKET_ERROR) {
+            if (send(sock, full_message.c_str(), full_message.length(), 0) == SOCKET_ERROR) {
                 int error_code = WSAGetLastError();
                 logger->Log("ML SERVICE: Failed to send request (WSA error: " + std::to_string(error_code) + ") - using fallback score");
                 closesocket(sock);
@@ -317,29 +428,42 @@ public:
                 return config->fallback_score;
             }
             
-            // Receive response with timeout
-            char response[256];
+            // Receive response with timeout (length-prefixed protobuf format)
+            char response[4096];
             memset(response, 0, sizeof(response));
             int bytes_received = recv(sock, response, sizeof(response) - 1, 0);
             
             if (bytes_received > 0) {
-                response[bytes_received] = '\0';
+                logger->Log("ML SERVICE: Received response (" + std::to_string(bytes_received) + " bytes)");
                 
-                // Parse score from response safely
-                char* score_pos = strstr(response, "SCORE:");
-                if (score_pos && strlen(score_pos) > 6) {
-                    double parsed_score = atof(score_pos + 6);
+                // Parse length-prefixed protobuf response
+                if (bytes_received >= 4) {
+                    uint32_t response_length = 
+                        ((unsigned char)response[0] << 24) |
+                        ((unsigned char)response[1] << 16) |
+                        ((unsigned char)response[2] << 8) |
+                        ((unsigned char)response[3]);
                     
-                    // Validate score range (0.0 to 1.0)
-                    if (parsed_score >= 0.0 && parsed_score <= 1.0) {
-                        score = parsed_score;
-                        connection_successful = true;
-                        logger->Log("ML SERVICE: Received valid score: " + std::to_string(score));
+                    logger->Log("ML SERVICE: Response length prefix: " + std::to_string(response_length) + " bytes");
+                    
+                    if (bytes_received >= 4 + response_length) {
+                        // Parse score from protobuf response (field 1, wire type 5 for float)
+                        float parsed_score = ParseScoreFromProtobuf(response + 4, response_length);
+                        
+                        if (parsed_score >= 0.0f && parsed_score <= 1.0f) {
+                            score = (double)parsed_score;
+                            connection_successful = true;
+                            logger->Log("ML SERVICE: Received valid score: " + std::to_string(score));
+                        } else if (parsed_score == -2.0f) {
+                            logger->Log("ML SERVICE WARNING: No valid score found in protobuf response - using fallback");
+                        } else {
+                            logger->Log("ML SERVICE WARNING: Score out of valid range [0.0-1.0]: " + std::to_string(parsed_score) + " - using fallback");
+                        }
                     } else {
-                        logger->Log("ML SERVICE WARNING: Score out of valid range [0.0-1.0]: " + std::to_string(parsed_score) + " - using fallback");
+                        logger->Log("ML SERVICE WARNING: Incomplete response received - using fallback score");
                     }
                 } else {
-                    logger->Log("ML SERVICE WARNING: Invalid response format: '" + std::string(response) + "' - using fallback score");
+                    logger->Log("ML SERVICE WARNING: Response too short for length prefix - using fallback score");
                 }
             } else if (bytes_received == 0) {
                 logger->Log("ML SERVICE WARNING: Connection closed by server - using fallback score");
