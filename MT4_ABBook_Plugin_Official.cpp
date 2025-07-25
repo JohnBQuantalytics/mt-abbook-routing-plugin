@@ -244,6 +244,18 @@ private:
         return result;
     }
     
+    std::string EncodeInt64(int field_number, int64_t value) {
+        std::string result;
+        uint32_t field_tag = (field_number << 3) | 0; // Wire type 0 for varint
+        result += EncodeVarint(field_tag);
+        
+        // Encode the int64 value as varint
+        uint64_t unsigned_value = (uint64_t)value;
+        result += EncodeVarint(unsigned_value);
+        
+        return result;
+    }
+    
     std::string EncodeString(int field_number, const std::string& value) {
         std::string result;
         uint32_t field_tag = (field_number << 3) | 2; // Wire type 2 for length-delimited
@@ -253,49 +265,117 @@ private:
         return result;
     }
     
-    std::string CreateScoringRequest(const TradeRecord* trade, const UserInfo* user) {
+    std::string CreateScoringRequest(const TradeRecord& trade, const UserInfo& user) {
         std::string request;
         
-        // Clean and normalize trade data
-        float open_price = (trade->open_price > 0.0) ? (float)trade->open_price : 1.0f;
-        float lot_volume = (trade->volume > 0) ? (float)trade->volume / 100.0f : 1.0f; // MT4 volume is in lots*100
-        uint32_t deal_type = (trade->cmd == 0) ? 0 : 1; // 0=buy, 1=sell
+        try {
+            // === CORE TRADE DATA (Fields 1-5) ===
+            request += EncodeFloat(1, (float)trade.open_price);           // open_price
+            request += EncodeFloat(2, (float)trade.sl);                   // sl (stop loss)
+            request += EncodeFloat(3, (float)trade.tp);                   // tp (take profit)
+            request += EncodeInt64(4, (int64_t)trade.cmd);               // deal_type (0=buy, 1=sell)
+            request += EncodeFloat(5, (float)(trade.volume / 100.0));     // lot_volume (MT4 volume is in mini-lots)
+            
+            // === ACCOUNT & TRADING HISTORY (Fields 6-36) ===
+            request += EncodeInt64(6, 0);                                // is_bonus (assume no bonus)
+            
+            // Calculate turnover USD: price * volume * contract_size
+            float turnover = (float)(trade.open_price * (trade.volume / 100.0) * 100000.0);
+            request += EncodeFloat(7, turnover);                         // turnover_usd
+            
+            request += EncodeFloat(8, (float)user.balance);              // opening_balance
+            request += EncodeInt64(9, 1);                               // concurrent_positions (assume 1)
+            
+            // Calculate SL/TP percentages
+            float sl_perc = (trade.sl != 0.0) ? (float)abs(trade.open_price - trade.sl) / (float)trade.open_price : 0.0f;
+            float tp_perc = (trade.tp != 0.0) ? (float)abs(trade.tp - trade.open_price) / (float)trade.open_price : 0.0f;
+            
+            request += EncodeFloat(10, sl_perc);                         // sl_perc
+            request += EncodeFloat(11, tp_perc);                         // tp_perc
+            request += EncodeInt64(12, (trade.sl != 0.0) ? 1 : 0);     // has_sl
+            request += EncodeInt64(13, (trade.tp != 0.0) ? 1 : 0);     // has_tp
+            
+            // Trading performance metrics (use defaults for unavailable data)
+            request += EncodeFloat(14, 0.6f);                           // profitable_ratio
+            request += EncodeInt64(15, 3);                              // num_open_trades
+            request += EncodeInt64(16, 50);                             // num_closed_trades
+            request += EncodeInt64(17, 35);                             // age (years)
+            request += EncodeInt64(18, 90);                             // days_since_reg
+            request += EncodeFloat(19, (float)user.balance * 1.5f);     // deposit_lifetime
+            request += EncodeInt64(20, 5);                              // deposit_count
+            request += EncodeFloat(21, (float)user.balance * 0.2f);     // withdraw_lifetime
+            request += EncodeInt64(22, 2);                              // withdraw_count
+            request += EncodeInt64(23, 0);                              // vip (0 = regular)
+            request += EncodeInt64(24, 3600);                           // holding_time_sec (1 hour avg)
+            request += EncodeFloat(25, 100000.0f);                      // lot_usd_value
+            request += EncodeFloat(26, -500.0f);                        // max_drawdown
+            request += EncodeFloat(27, 800.0f);                         // max_runup
+            request += EncodeFloat(28, 5.0f);                           // volume_24h
+            request += EncodeFloat(29, 90.0f);                          // trader_tenure_days
+            request += EncodeFloat(30, 7.5f);                           // deposit_to_withdraw_ratio
+            request += EncodeInt64(31, 1);                              // education_known
+            request += EncodeInt64(32, 1);                              // occupation_known
+            request += EncodeFloat(33, turnover / (float)user.balance); // lot_to_balance_ratio
+            request += EncodeFloat(34, 0.055f);                         // deposit_density
+            request += EncodeFloat(35, 0.022f);                         // withdrawal_density
+            request += EncodeFloat(36, turnover / 50.0f);               // turnover_per_trade
+            
+            // === RECENT PERFORMANCE METRICS (Fields 37-45) ===
+            request += EncodeFloat(37, 0.65f);                          // profitable_ratio_24h
+            request += EncodeFloat(38, 0.58f);                          // profitable_ratio_48h
+            request += EncodeFloat(39, 0.62f);                          // profitable_ratio_72h
+            request += EncodeInt64(40, 8);                              // trades_count_24h
+            request += EncodeInt64(41, 15);                             // trades_count_48h
+            request += EncodeInt64(42, 22);                             // trades_count_72h
+            request += EncodeFloat(43, 45.0f);                          // avg_profit_24h
+            request += EncodeFloat(44, 38.0f);                          // avg_profit_48h
+            request += EncodeFloat(45, 41.0f);                          // avg_profit_72h
+            
+            // === CONTEXT & METADATA (Fields 46-60) ===
+            
+            // Clean and normalize symbol
+            std::string clean_symbol = std::string(trade.symbol);
+            // Remove any corrupted characters
+            for (size_t i = 0; i < clean_symbol.length(); i++) {
+                if (clean_symbol[i] < 32 || clean_symbol[i] > 126) {
+                    clean_symbol = clean_symbol.substr(i + 1);
+                    break;
+                }
+            }
+            request += EncodeString(46, clean_symbol);                  // symbol
+            
+            // Determine instrument group based on symbol
+            std::string inst_group = "FXMajors";
+            if (clean_symbol.find("USD") != std::string::npos || 
+                clean_symbol.find("EUR") != std::string::npos ||
+                clean_symbol.find("GBP") != std::string::npos) {
+                inst_group = "FXMajors";
+            } else if (clean_symbol.find("XAU") != std::string::npos || 
+                       clean_symbol.find("GOLD") != std::string::npos) {
+                inst_group = "Metals";
+            }
+            request += EncodeString(47, inst_group);                    // inst_group
+            
+            request += EncodeString(48, "medium");                      // frequency
+            request += EncodeString(49, std::string(user.group));      // trading_group
+            request += EncodeString(50, "CY");                          // licence
+            request += EncodeString(51, "MT4");                         // platform
+            request += EncodeString(52, "bachelor");                    // LEVEL_OF_EDUCATION
+            request += EncodeString(53, "professional");               // OCCUPATION
+            request += EncodeString(54, "employment");                  // SOURCE_OF_WEALTH
+            request += EncodeString(55, "50k-100k");                   // ANNUAL_DISPOSABLE_INCOME
+            request += EncodeString(56, "weekly");                      // AVERAGE_FREQUENCY_OF_TRADES
+            request += EncodeString(57, "employed");                    // EMPLOYMENT_STATUS
+            request += EncodeString(58, "CY");                          // country_code
+            request += EncodeString(59, "cpc");                         // utm_medium
+            request += EncodeString(62, std::to_string(trade.login));   // user_id (field 62 works, not 60!)
+            
+        } catch (...) {
+            // Exception in CreateScoringRequest - using minimal fallback
+            request.clear();
+            request += EncodeString(62, std::to_string(trade.login));   // user_id only (field 62)
+        }
         
-        // Extract user ID safely
-        char user_id_str[32];
-        snprintf(user_id_str, sizeof(user_id_str), "%d", trade->login);
-        
-        // Calculate derived fields
-        float turnover_usd = open_price * lot_volume * 100000.0f; // Assuming standard lot size
-        float opening_balance = (user && user->balance > 0.0) ? (float)user->balance : 10000.0f;
-        
-        // Build protobuf request per work requirements
-        request += EncodeFloat(1, open_price);                    // open_price
-        request += EncodeFloat(2, open_price * 0.99f);            // sl (stop loss, estimated)
-        request += EncodeFloat(3, open_price * 1.01f);            // tp (take profit, estimated)
-        request += EncodeUInt32(4, deal_type);                    // deal_type (0=buy, 1=sell)
-        request += EncodeFloat(5, lot_volume);                    // lot_volume
-        request += EncodeInt32(6, 0);                             // is_bonus (0=real funds)
-        request += EncodeFloat(7, turnover_usd);                  // turnover_usd
-        request += EncodeFloat(8, opening_balance);               // opening_balance
-        request += EncodeInt32(9, 1);                             // concurrent_positions (estimated)
-        request += EncodeFloat(10, 0.01f);                        // sl_perc (1% estimated)
-        request += EncodeFloat(11, 0.01f);                        // tp_perc (1% estimated)
-        request += EncodeInt32(12, 1);                            // has_sl (1=has stop loss)
-        
-        // String fields (using defaults where user data unavailable)
-        request += EncodeString(42, "MT4");                       // platform
-        request += EncodeString(43, "unknown");                   // LEVEL_OF_EDUCATION
-        request += EncodeString(44, "unknown");                   // OCCUPATION
-        request += EncodeString(45, "unknown");                   // SOURCE_OF_WEALTH
-        request += EncodeString(46, "unknown");                   // ANNUAL_DISPOSABLE_INCOME
-        request += EncodeString(47, "unknown");                   // AVERAGE_FREQUENCY_OF_TRADES
-        request += EncodeString(48, "unknown");                   // EMPLOYMENT_STATUS
-        request += EncodeString(49, "US");                        // country_code (default)
-        request += EncodeString(50, "direct");                    // utm_medium (default)
-        request += EncodeString(51, user_id_str);                 // user_id
-        
-        logger->Log("ML SERVICE: Created protobuf request with " + std::to_string(request.length()) + " bytes");
         return request;
     }
     
@@ -417,7 +497,7 @@ public:
             }
             
             // Create scoring request (length-prefixed protobuf format)
-            std::string protobuf_request = CreateScoringRequest(trade, user);
+            std::string protobuf_request = CreateScoringRequest(*trade, *user);
             std::string full_message = CreateLengthPrefixedMessage(protobuf_request);
             
             logger->Log("ML SERVICE: Sending protobuf request (" + std::to_string(full_message.length()) + " bytes)");
